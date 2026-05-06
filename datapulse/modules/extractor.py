@@ -9,7 +9,7 @@ Pipeline:
     → Programmatic extraction  (BeautifulSoup, no further LLM calls)
     → Schema inference         (LLM infers field names)
 
-On selector failure: retry with next chunk, up to max_retries.
+On selector failure: try next chunk (all chunks are tried until one works).
 If neither Anthropic nor Ollama is available: return cleaned text.
 """
 
@@ -38,6 +38,8 @@ that best targets the following data: {content_target}
 Rules:
 - Prefer CSS selectors over XPath.
 - Target the CONTAINER element that holds each individual item (not the whole list).
+- The container must contain ALL of the requested fields, not just one of them. \
+  For example, if "name and address" is requested, target the element that has BOTH.
 - Avoid brittle class names that look auto-generated (e.g. x7f2_item). \
   Prefer semantic tags, data- attributes, or structural selectors.
 - If the page has no matching elements, return null for selector.
@@ -61,14 +63,17 @@ Samples:
 
 The selector targets CONTAINER elements, so each sample may contain extra text \
 (descriptions, labels, links) beyond just the target fields — that is expected and fine.
-Answer true if each sample CONTAINS the requested data somewhere within it.
-Answer false only if the samples are completely unrelated to the request \
-(e.g. navigation links, cookie banners, empty elements).
+
+Answer true ONLY if the samples collectively show ALL major data types the user requested. \
+For example, if they asked for "name and address", both a name AND an address must be visible \
+— not just one of them.
+Answer false if: the samples contain only SOME of the requested fields but clearly miss others; \
+or samples are navigation links, cookie banners, or empty elements.
 
 Answer with valid JSON only:
 {{
   "valid": true or false,
-  "reason": "<one sentence>"
+  "reason": "<one sentence — if false, say which fields are present and which are missing>"
 }}"""
 
 _SCHEMA_PROMPT = """\
@@ -270,7 +275,6 @@ def extract(
 
     structural_html = clean_html_keep_tags(html)
     chunks = chunk_html(structural_html)
-    max_retries: int = cfg.llm.get("max_retries", 3)
 
     # Try cached selector first
     if selector_hint:

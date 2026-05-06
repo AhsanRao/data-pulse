@@ -13,10 +13,12 @@ playwright:
   max_pages: 20            # max pagination clicks with --paginate
 
 llm:
+  # Model used when Ollama is the active backend (no LiteLLM/Anthropic configured)
   local_model: qwen2.5:1.5b
+
+  # Model used when Anthropic direct SDK is the active backend (ANTHROPIC_API_KEY set,
+  # LiteLLM not configured). Has no effect when using LiteLLM — model comes from LLM_MODEL env var.
   selector_model: claude-haiku-4-5-20251001
-  output_model: claude-haiku-4-5-20251001
-  max_retries: 10          # try more HTML chunks before giving up
 
 output:
   default_format: json

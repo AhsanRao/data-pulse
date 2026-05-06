@@ -3,15 +3,14 @@
 Splits by block-level elements rather than character count, so each chunk
 maps to a coherent structural unit of the page.
 
-Recurses into elements that are larger than MAX_CHUNK_CHARS instead of
-treating them as one opaque block — this handles SPAs where the entire page
-is wrapped in a single top-level div (e.g. rf-org-footer-container on RSAC).
+Recurses into elements that are larger than MAX_CHUNK_CHARS. No fixed depth
+limit — HTML trees are finite, so recursion naturally terminates. SPAs like
+MWC (depth ~12) and Angular catalog pages (depth ~22) both work correctly.
 """
 
 from __future__ import annotations
 
 MAX_CHUNK_CHARS = 6_000
-_MAX_RECURSE_DEPTH = 15  # how deep to drill — SPAs can nest 10-12 levels deep
 
 
 def chunk_html(html: str) -> list[str]:
@@ -23,18 +22,18 @@ def chunk_html(html: str) -> list[str]:
         body = soup.body or soup
 
         chunks: list[str] = []
-        _collect_chunks(body, chunks, depth=0)
+        _collect_chunks(body, chunks)
         return chunks or [html[:MAX_CHUNK_CHARS]]
 
     except Exception:
         return [html[i : i + MAX_CHUNK_CHARS] for i in range(0, len(html), MAX_CHUNK_CHARS)]
 
 
-def _collect_chunks(element, chunks: list[str], depth: int) -> None:
+def _collect_chunks(element, chunks: list[str]) -> None:
     """Recursively collect chunks from an element's children.
 
-    If a child element is too large to fit in a chunk and we haven't hit the
-    recursion limit, we drill into its children instead of emitting it whole.
+    Drills into any child that is too large to fit in MAX_CHUNK_CHARS rather
+    than emitting it as one opaque blob. Stops when children fit.
     """
     from bs4 import Tag
 
@@ -48,13 +47,13 @@ def _collect_chunks(element, chunks: list[str], depth: int) -> None:
         child_text = str(child)
         child_len = len(child_text)
 
-        # Oversized child — recurse into it if depth allows
-        if child_len > MAX_CHUNK_CHARS and depth < _MAX_RECURSE_DEPTH:
+        # Oversized child — drill deeper
+        if child_len > MAX_CHUNK_CHARS:
             if current:
                 chunks.append("\n".join(current))
                 current = []
                 current_len = 0
-            _collect_chunks(child, chunks, depth + 1)
+            _collect_chunks(child, chunks)
             continue
 
         # Normal child — accumulate until chunk is full
