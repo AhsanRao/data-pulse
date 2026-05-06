@@ -1,0 +1,22 @@
+scraping:
+  max_urls: 25
+  depth: 1
+  concurrency: 4
+  timeout_seconds: 30
+  same_domain_only: true
+
+playwright:
+  scroll_increment_px: 500
+  scroll_pause_ms: 800
+  headless: true
+  max_scroll_attempts: 30
+
+llm:
+  local_model: qwen2.5:1.5b
+  selector_model: claude-haiku-4-5-20251001
+  output_model: claude-haiku-4-5-20251001
+  max_retries: 3
+
+output:
+  default_format: json
+  include_metadata: true
