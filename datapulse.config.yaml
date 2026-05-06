@@ -20,6 +20,12 @@ llm:
   # LiteLLM not configured). Has no effect when using LiteLLM — model comes from LLM_MODEL env var.
   selector_model: claude-haiku-4-5-20251001
 
+  # Safety cap: max number of HTML chunks to try before giving up.
+  # The loop stops EARLY the moment a valid selector is found — so if the selector
+  # is found at chunk 10, chunks 11–50 are never touched.
+  # Only exists to prevent runaway LLM calls on unusually large pages (100+ chunks).
+  max_chunk_attempts: 50
+
 output:
   default_format: json
   include_metadata: true

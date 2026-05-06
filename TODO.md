@@ -94,7 +94,7 @@ datapulse/
 │   │                        _paginate_playwright(): click Next, dismiss consent, combine pages
 │   │                        _dismiss_consent(): handles OneTrust and common cookie popups
 │   ├── extractor.py         Module 4 — clean/chunk/LLM/validate/extract
-│   │                        Tries ALL chunks (not capped), tightened validation prompt
+│   │                        Tries up to max_chunk_attempts (default 50) chunks; exits early on first valid selector
 │   └── formatter.py         Module 5 — JSON/CSV/MD/text renderer + metadata
 │                            _normalise_items(): key-value prefix parsing (name:/url: lines)
 │
@@ -142,9 +142,10 @@ output/debug/                Raw + clean HTML snapshots (--debug only, gitignore
    (cyberab.org Angular app = depth 22, MWC Algolia = depth ~12). Recursion terminates
    naturally because HTML trees are finite. Chunks are ≤6,000 chars each.
 
-5. **Extractor tries ALL chunks, not just first N.**
-   Old `chunks[:max_retries]` cap was replaced with `enumerate(chunks)`. This fixed
-   MWC (exhibitors at chunk 12) and cyberab (cards at chunk 28+).
+5. **Extractor caps chunk attempts at `max_chunk_attempts` (default 50), exits early on success.**
+   Old hard cap of 10 was replaced with a configurable `cfg.llm.get("max_chunk_attempts", 50)`.
+   Loop returns immediately when a valid selector is found — so chunk 10 success skips chunks 11–50.
+   This fixed MWC (exhibitors at chunk 12) and cyberab (cards at chunk 28+).
 
 6. **Schema fields flow from extractor → formatter via `inferred_schema`.**
    `main.py` collects `extraction.schema_fields` into `inferred_schema[]` and passes
@@ -225,7 +226,7 @@ output/debug/                Raw + clean HTML snapshots (--debug only, gitignore
 - [x] `formatter.py` — `_normalise_items()` parses `key: value` prefix lines before positional mapping
 - [x] `scraper.py` — `--paginate` flag: `_paginate_playwright()`, `_dismiss_consent()`
 - [x] `main.py` — `--paginate` CLI flag, passed through `_run_pipeline()`
-- [x] `extractor.py` — tries ALL chunks (removed `[:max_retries]` cap)
+- [x] `extractor.py` — removed hard `[:10]` cap; now reads `max_chunk_attempts` from config (default 50), exits early on first valid selector
 - [x] `extractor.py` — validation prompt requires ALL requested fields present
 - [x] `extractor.py` — selector prompt clarified: container must hold ALL requested fields
 - [x] `datapulse.config.yaml` — added `playwright.max_pages: 20`

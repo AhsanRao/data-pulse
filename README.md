@@ -206,11 +206,12 @@ playwright:
   scroll_pause_ms: 1500
   headless: true
   max_scroll_attempts: 60
+  max_pages: 20            # max Next Page clicks with --paginate
 
 llm:
   local_model: qwen2.5:1.5b
-  selector_model: claude-haiku-4-5-20251001
-  max_retries: 10
+  selector_model: claude-haiku-4-5-20251001   # Anthropic direct SDK only
+  max_chunk_attempts: 50  # exits early the moment a valid selector is found
 
 output:
   default_format: json

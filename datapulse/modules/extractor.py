@@ -283,8 +283,9 @@ def extract(
             logger.debug("Cached selector '%s' → %d elements", selector_hint, len(elements))
             return _build_result(elements, selector_hint, content_target, cleaned_text)
 
-    for attempt, chunk in enumerate(chunks, start=1):
-        logger.debug("Selector discovery attempt %d/%d", attempt, len(chunks))
+    max_attempts: int = cfg.llm.get("max_chunk_attempts", 50)
+    for attempt, chunk in enumerate(chunks[:max_attempts], start=1):
+        logger.debug("Selector discovery attempt %d/%d", attempt, min(max_attempts, len(chunks)))
         try:
             sel_result = _discover_selector(chunk, content_target)
         except Exception as exc:
@@ -308,7 +309,7 @@ def extract(
 
         logger.debug("Selector '%s' failed validation — retrying", sel_result.selector)
 
-    logger.warning("All %d chunks tried, no valid selector found — returning cleaned text.", len(chunks))
+    logger.warning("All %d chunks tried, no valid selector found — returning cleaned text.", min(max_attempts, len(chunks)))
     return ExtractionResult(
         items=[cleaned_text],
         selector_used=None,
