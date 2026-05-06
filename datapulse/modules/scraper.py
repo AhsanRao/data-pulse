@@ -97,13 +97,24 @@ async def _fetch_playwright(url: str, timeout: int) -> ScrapeResult:
             response = await page.goto(url, wait_until="domcontentloaded")
             status = response.status if response else 0
 
+            # Give SPA frameworks time to finish hydration after DOM is ready
+            try:
+                await page.wait_for_load_state("networkidle", timeout=15000)
+            except PWTimeout:
+                pass
+
             # Scroll to load lazy/infinite content
             prev_height = -1
             scroll_count = 0
+            no_change_streak = 0
             while scroll_count < max_scrolls:
                 curr_height = await page.evaluate("document.body.scrollHeight")
                 if curr_height == prev_height:
-                    break
+                    no_change_streak += 1
+                    if no_change_streak >= 3:
+                        break
+                else:
+                    no_change_streak = 0
                 prev_height = curr_height
                 await page.evaluate(f"window.scrollBy(0, {scroll_px})")
                 try:

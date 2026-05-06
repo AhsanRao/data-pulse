@@ -70,6 +70,7 @@ def _load_yaml(path: Path) -> dict:
 class Config:
     def __init__(self, config_path: Path | None = None):
         path = config_path or Path.cwd() / "datapulse.config.yaml"
+        self._project_root = path.parent
         file_cfg = _load_yaml(path)
         self._cfg = _deep_merge(_DEFAULTS, file_cfg)
 
@@ -105,6 +106,34 @@ class Config:
     def anthropic_api_key(self) -> str | None:
         return os.getenv("ANTHROPIC_API_KEY")
 
+    # Generic OpenAI-compatible provider (LiteLLM, OpenAI, Anthropic via proxy, etc.)
+    # LLM_* is the canonical form; LITELLM_* kept for backward compatibility.
+
+    @property
+    def llm_base_url(self) -> str | None:
+        return os.getenv("LLM_BASE_URL") or os.getenv("LITELLM_BASE_URL")
+
+    @property
+    def llm_api_key(self) -> str | None:
+        return os.getenv("LLM_API_KEY") or os.getenv("LITELLM_API_KEY")
+
+    @property
+    def llm_model(self) -> str | None:
+        return os.getenv("LLM_MODEL") or os.getenv("LITELLM_MODEL")
+
+    # Kept for backward compat — prefer llm_* above
+    @property
+    def litellm_api_key(self) -> str | None:
+        return self.llm_api_key
+
+    @property
+    def litellm_base_url(self) -> str | None:
+        return self.llm_base_url
+
+    @property
+    def litellm_model(self) -> str | None:
+        return self.llm_model
+
     @property
     def scraperapi_key(self) -> str | None:
         return os.getenv("SCRAPERAPI_KEY")
@@ -117,13 +146,13 @@ class Config:
 
     @property
     def log_dir(self) -> Path:
-        d = Path.home() / ".datapulse" / "logs"
+        d = self._project_root / ".datapulse" / "logs"
         d.mkdir(parents=True, exist_ok=True)
         return d
 
     @property
     def jobs_dir(self) -> Path:
-        d = Path.home() / ".datapulse" / "jobs"
+        d = self._project_root / ".datapulse" / "jobs"
         d.mkdir(parents=True, exist_ok=True)
         return d
 

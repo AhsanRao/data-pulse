@@ -1,9 +1,18 @@
-"""LiteLLM proxy client — OpenAI-compatible HTTP wrapper.
+"""OpenAI-compatible LLM client.
 
-Points at a self-hosted LiteLLM gateway (http://10.8.124.144:4000/).
-Model: mueen-80b  (Qwen 80B served via LiteLLM).
+Works with any OpenAI-compatible provider:
+  - LiteLLM proxy  (LLM_BASE_URL=http://your-proxy:4000, LLM_MODEL=mueen-80b)
+  - OpenAI         (LLM_BASE_URL=https://api.openai.com/v1, LLM_MODEL=gpt-4o-mini)
+  - Anthropic†     (LLM_BASE_URL=https://api.anthropic.com/v1, LLM_MODEL=claude-haiku-4-5-20251001)
+  - Any compatible proxy or self-hosted model
 
-Used by both intent_parser and extractor as the primary LLM backend.
+Configure via secrets.env:
+  LLM_BASE_URL=<endpoint>   # required
+  LLM_API_KEY=<key>         # required
+  LLM_MODEL=<model-name>    # required
+  (LITELLM_* vars still accepted for backward compatibility)
+
+† Anthropic's REST API is OpenAI-compatible at /v1/chat/completions.
 """
 
 from __future__ import annotations
@@ -21,11 +30,14 @@ _TIMEOUT = 120  # seconds
 
 
 def _get_config() -> tuple[str, str, str]:
-    """Return (base_url, api_key, model) from config/env."""
+    """Return (base_url, api_key, model) from env via config.
+
+    Priority: LLM_* env vars → LITELLM_* env vars (backward compat) → defaults.
+    """
     from datapulse.config import cfg
-    base_url = cfg.litellm_base_url or "http://10.8.124.144:4000"
-    api_key = cfg.litellm_api_key or "my-litellm-key-2026"
-    model = cfg.litellm_model or "mueen-80b"
+    base_url = cfg.llm_base_url or "http://10.8.124.144:4000"
+    api_key = cfg.llm_api_key or ""
+    model = cfg.llm_model or "mueen-80b"
     return base_url.rstrip("/"), api_key, model
 
 

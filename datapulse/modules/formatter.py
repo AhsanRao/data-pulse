@@ -116,23 +116,38 @@ def _normalise_items(items: list[Any], fields: list[str]) -> list[dict]:
     if not items:
         return []
 
-    # Already-dict items (future use)
     if items and isinstance(items[0], dict):
         return items
 
-    # Single-field schema
     if len(fields) == 1:
         return [{fields[0]: str(item)} for item in items]
 
-    # Multi-field: try to split each item by common delimiters
     normalised: list[dict] = []
     for item in items:
         text = str(item)
-        # Try splitting by newline or pipe first
         parts = [p.strip() for p in re.split(r"\n|\|", text) if p.strip()]
         row: dict = {}
-        for i, field in enumerate(fields):
-            row[field] = parts[i] if i < len(parts) else ""
+        remaining: list[str] = []
+
+        # First pass: collect explicit "key: value" lines and match to schema fields
+        for part in parts:
+            m = re.match(r"^(\w[\w_-]*):\s+(.+)$", part)
+            if m:
+                key, val = m.group(1).lower(), m.group(2)
+                matched = next(
+                    (f for f in fields if f.lower() == key or key in f.lower() or f.lower() in key),
+                    None,
+                )
+                if matched and matched not in row:
+                    row[matched] = val
+                    continue
+            remaining.append(part)
+
+        # Second pass: fill remaining fields positionally from unmatched parts
+        for field in fields:
+            if field not in row:
+                row[field] = remaining.pop(0) if remaining else ""
+
         normalised.append(row)
     return normalised
 

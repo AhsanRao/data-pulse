@@ -42,9 +42,8 @@ class Job:
 
     @property
     def store_path(self) -> Path:
-        store_dir = Path.home() / ".datapulse" / "jobs"
-        store_dir.mkdir(parents=True, exist_ok=True)
-        return store_dir / f"{self.job_id}.json"
+        from datapulse.config import cfg
+        return cfg.jobs_dir / f"{self.job_id}.json"
 
     def save(self) -> None:
         self.updated_at = datetime.now(timezone.utc).isoformat()
@@ -54,8 +53,8 @@ class Job:
 
     @classmethod
     def load(cls, job_id: str) -> "Job":
-        store_dir = Path.home() / ".datapulse" / "jobs"
-        path = store_dir / f"{job_id}.json"
+        from datapulse.config import cfg
+        path = cfg.jobs_dir / f"{job_id}.json"
         if not path.exists():
             raise FileNotFoundError(f"No job found: {job_id}")
         data = json.loads(path.read_text())
@@ -65,8 +64,8 @@ class Job:
 
     @classmethod
     def list_all(cls) -> list[dict]:
-        store_dir = Path.home() / ".datapulse" / "jobs"
-        store_dir.mkdir(parents=True, exist_ok=True)
+        from datapulse.config import cfg
+        store_dir = cfg.jobs_dir
         jobs = []
         for p in sorted(store_dir.glob("*.json"), reverse=True):
             try:

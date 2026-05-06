@@ -7,10 +7,8 @@ DataPulse turns a plain-English sentence into structured data. You say what you 
 ```bash
 datapulse run "get book titles and prices from https://books.toscrape.com"
 datapulse run "give me all the links on https://news.ycombinator.com"
-datapulse run "title and summary of each article on https://blog.example.com"
+datapulse run --url https://path.rsaconference.com/... --target "exhibitor name and type" --playwright
 ```
-
-Runs locally. No cloud account required. Uses a local Ollama model for intent parsing and falls back to Ollama for extraction when no Anthropic key is configured.
 
 ---
 
@@ -20,7 +18,7 @@ Runs locally. No cloud account required. Uses a local Ollama model for intent pa
 # 1. Clone and create venv
 git clone <repo>
 cd data-pulse
-python3.14 -m venv .env      # or: python3 -m venv .env
+python3.14 -m venv .env
 source .env/bin/activate
 
 # 2. Install dependencies
@@ -28,14 +26,13 @@ pip install -r requirements.txt
 pip install -e .
 playwright install chromium
 
-# 3. Install and start Ollama (local AI model)
-brew install ollama
-brew services start ollama
-ollama pull qwen2.5:1.5b     # one-time, ~986 MB
+# 3. Configure your LLM (see secrets.env for all options)
+cp secrets.env.example secrets.env   # or edit secrets.env directly
+# → set LLM_BASE_URL, LLM_API_KEY, LLM_MODEL
 
-# 4. (Optional) Add Anthropic key for higher-quality extraction
-cp .env.example secrets.env
-# edit secrets.env → ANTHROPIC_API_KEY=sk-ant-...
+# 4. (Optional) Start Ollama for a free local fallback
+brew install ollama && brew services start ollama
+ollama pull qwen2.5:1.5b
 
 # 5. Run
 datapulse run "get book titles and prices from https://books.toscrape.com"
@@ -51,7 +48,7 @@ DataPulse runs a 5-module pipeline on every query:
 Your query
     │
     ▼
-1. Intent Parser    — Ollama qwen2.5:1.5b parses: URL, what to extract, how deep to crawl
+1. Intent Parser    — LLM parses: URL, what to extract, how deep to crawl
     │
     ▼
 2. Scope Guard      — Enforces max URLs, domain filter, deduplication
@@ -62,66 +59,90 @@ Your query
                       Layer 3: ScraperAPI / Zyte (bot-protected sites)
     │
     ▼
-4. Extractor        — Trafilatura cleans HTML → LLM finds CSS selector →
-                      Validation gate → BeautifulSoup extracts all items
+4. Extractor        — Cleans HTML (strips nav/scripts/ads) → recursive chunker →
+                      LLM finds CSS selector → validation gate →
+                      BeautifulSoup extracts all items
     │
     ▼
 5. Formatter        — Outputs JSON / CSV / Markdown / plain text + metadata
 ```
 
-**LLM calls per job: 1–3 total.** Extraction itself runs programmatically (BeautifulSoup) — zero per-item LLM calls.
+**LLM calls per job: 2–3 total.** Extraction itself runs programmatically (BeautifulSoup) — zero per-item LLM calls.
 
-### LLM backends (auto-selected)
+---
 
-| Priority | Backend | Used for |
+## LLM Backends
+
+DataPulse uses any **OpenAI-compatible** provider — set three env vars in `secrets.env`:
+
+```bash
+LLM_BASE_URL=<endpoint>    # your provider's base URL
+LLM_API_KEY=<key>          # your API key
+LLM_MODEL=<model-name>     # model to use
+```
+
+### Provider examples
+
+| Provider | `LLM_BASE_URL` | `LLM_MODEL` example |
 |---|---|---|
-| 1st | Anthropic Claude Haiku | Selector discovery, validation, schema (if `ANTHROPIC_API_KEY` set) |
-| 2nd | Ollama qwen2.5:1.5b | Intent parsing always; extraction when no Anthropic key |
-| Fallback | Text-only | Full-page cleaned text (Trafilatura) |
+| **LiteLLM proxy** | `http://your-server:4000` | `mueen-80b` |
+| **OpenAI** | `https://api.openai.com/v1` | `gpt-4o-mini` |
+| **Anthropic** | `https://api.anthropic.com/v1` | `claude-haiku-4-5-20251001` |
+| **Ollama** (local) | auto-detected | `qwen2.5:1.5b` |
+
+### Auto-selection priority
+
+| Priority | Backend | Condition |
+|---|---|---|
+| 1st | OpenAI-compatible provider | `LLM_BASE_URL` + `LLM_API_KEY` set |
+| 2nd | Anthropic direct SDK | `ANTHROPIC_API_KEY` set |
+| 3rd | Ollama (local) | Ollama running, model pulled |
+| Fallback | Text-only | Trafilatura full-page text |
 
 ---
 
 ## Usage
 
-### Natural language queries (Phase 3)
+### Natural language queries
 
 ```bash
-# Structured data extraction
 datapulse run "get book title and price from https://books.toscrape.com"
-
-# URL listing
 datapulse run "give me all the links on https://news.ycombinator.com"
-
-# Deep crawl — follow links and extract from each page
 datapulse run "title and summary of each article on https://blog.example.com"
 ```
 
-### Explicit flags (faster, no Ollama needed for intent)
+### Explicit flags (no NL parsing needed)
 
 ```bash
 datapulse run --url https://books.toscrape.com \
   --target "book title and price" \
-  --format json
+  --format json \
+  --output books.json          # → written to output/books.json
 
 datapulse run --url https://quotes.toscrape.com \
   --target "quote text and author" \
   --format csv \
-  --output quotes.csv
-
-# Full-page text — no LLM required at all
-datapulse run --url https://example.com/article --format text
+  --output quotes.csv          # → output/quotes.csv
 ```
 
-### Force Playwright (JS-rendered pages)
+### JS-rendered pages (SPAs)
 
 ```bash
-datapulse run "job listings from https://example-jobs.io/listings" --playwright
+datapulse run --url https://example-spa.com/catalog \
+  --target "product name and price" \
+  --playwright \
+  --output products.json
 ```
 
-### Dry run (parse intent only)
+### Debug mode
 
 ```bash
-datapulse run "get prices from https://example.com" --dry-run
+datapulse run --url https://example.com --target "..." --debug
+# Saves to:
+#   output/<job_id>_<slug>_raw.html    — full Playwright HTML
+#   output/debug/<job_id>_<slug>_clean.html  — after stripping scripts/nav/ads
+#   .datapulse/logs/llm_calls.log      — every LLM prompt + response
+#   .datapulse/logs/datapulse.log      — structured debug log
 ```
 
 ---
@@ -130,9 +151,9 @@ datapulse run "get prices from https://example.com" --dry-run
 
 | Command | Description |
 |---|---|
-| `datapulse run "<query>"` | Extract data from a natural language query |
-| `datapulse run --url <URL>` | Extract data from a URL directly |
-| `datapulse jobs` | List all recent jobs |
+| `datapulse run "<query>"` | Extract from a natural language query |
+| `datapulse run --url <URL>` | Extract from a URL directly |
+| `datapulse jobs` | List recent jobs |
 | `datapulse inspect <job_id>` | Show job details and selector cache |
 | `datapulse resume <job_id>` | Resume a partial/interrupted job |
 | `datapulse config` | Open config file in default editor |
@@ -141,15 +162,15 @@ datapulse run "get prices from https://example.com" --dry-run
 
 | Flag | Default | Description |
 |---|---|---|
-| `--url` | — | Target URL (skips Ollama intent parsing) |
+| `--url` | — | Target URL (skips LLM intent parsing) |
 | `--target` | — | What to extract — activates LLM selector mode |
 | `--format` | `json` | `json` \| `csv` \| `md` \| `text` |
-| `--output` | stdout | Write output to file path |
+| `--output` | stdout | Output file — auto-placed in `output/` if no directory given |
 | `--max-urls` | 25 | URL cap per job |
-| `--depth` | from intent | Crawl depth (0=seed only, 2=deep) |
-| `--playwright` | off | Force Playwright layer |
+| `--depth` | from config | Crawl depth (0=seed only) |
+| `--playwright` | off | Force Playwright layer (required for SPAs) |
 | `--dry-run` | off | Show parsed intent, skip fetch |
-| `--debug` | off | Verbose logging to stderr + log file |
+| `--debug` | off | Verbose logs + HTML snapshots to `output/debug/` |
 
 ---
 
@@ -159,51 +180,70 @@ datapulse run "get prices from https://example.com" --dry-run
 
 ```yaml
 scraping:
-  max_urls: 25            # global URL cap per job
-  depth: 1                # 0=seed only, 1=follow links, 2=deep
-  concurrency: 4          # parallel workers
-  timeout_seconds: 30
+  max_urls: 25
+  depth: 1
+  concurrency: 4
+  timeout_seconds: 60
   same_domain_only: true
 
 playwright:
-  scroll_increment_px: 500
-  scroll_pause_ms: 800
+  scroll_increment_px: 800
+  scroll_pause_ms: 1500
   headless: true
-  max_scroll_attempts: 30
+  max_scroll_attempts: 60
 
 llm:
-  local_model: qwen2.5:1.5b          # Ollama model for intent parsing
-  selector_model: claude-haiku-4-5-20251001  # used if ANTHROPIC_API_KEY set
-  output_model: claude-haiku-4-5-20251001
-  max_retries: 3
+  local_model: qwen2.5:1.5b
+  selector_model: claude-haiku-4-5-20251001
+  max_retries: 10
 
 output:
   default_format: json
   include_metadata: true
 ```
 
-API keys go in `secrets.env` (never in the config file):
+API keys and LLM config go in `secrets.env` (never commit this file):
+
+```bash
+LLM_BASE_URL=http://your-server:4000
+LLM_API_KEY=your-key
+LLM_MODEL=your-model
+
+ANTHROPIC_API_KEY=sk-ant-...    # optional direct SDK fallback
+SCRAPERAPI_KEY=                  # optional anti-bot proxy
+ZYTE_API_KEY=                    # optional anti-bot proxy
+```
+
+> **Note:** The virtual environment lives in `.env/`. Because this conflicts with the usual `.env` dotenv filename, keys go in `secrets.env` instead.
+
+---
+
+## Output Files
+
+All output files are written to the `output/` folder (git-ignored):
 
 ```
-ANTHROPIC_API_KEY=sk-ant-...   # optional
-SCRAPERAPI_KEY=                # optional — for bot-protected sites
-ZYTE_API_KEY=                  # optional — alternative anti-bot proxy
+output/
+├── books.json              ← --output books.json
+├── quotes.csv
+└── debug/                  ← only created with --debug
+    ├── job_..._raw.html    ← full Playwright HTML
+    └── job_..._clean.html  ← after stripping scripts/nav/ads
 ```
-
-> **Note:** The virtual environment lives in `.env/`. Because this conflicts with the
-> usual `.env` dotenv filename, DataPulse reads API keys from `secrets.env` instead.
 
 ---
 
 ## Job Persistence
 
-Every job is saved to `~/.datapulse/jobs/<job_id>.json`. This enables:
+Every job is saved to `.datapulse/jobs/<job_id>.json`:
 
 - `datapulse inspect <job_id>` — see what was extracted and which selector was used
 - `datapulse resume <job_id>` — continue from the last checkpoint
-- Selector caching — pages with the same template reuse the discovered selector
+- Selector caching — pages with the same domain template reuse the discovered selector
 
-LLM call logs: `~/.datapulse/logs/llm_calls.log`
+Logs:
+- `.datapulse/logs/datapulse.log` — structured run log
+- `.datapulse/logs/llm_calls.log` — every LLM prompt + response (always written)
 
 ---
 
@@ -212,40 +252,43 @@ LLM call logs: `~/.datapulse/logs/llm_calls.log`
 | Layer | When used | Requirement |
 |---|---|---|
 | httpx | Always tried first (fast, static HTML) | None |
-| Playwright | httpx returns bot block / `--playwright` flag | `playwright install chromium` |
-| ScraperAPI | Cloudflare detected, `SCRAPERAPI_KEY` set | `SCRAPERAPI_KEY` in `secrets.env` |
-| Zyte | ScraperAPI unavailable, `ZYTE_API_KEY` set | `ZYTE_API_KEY` in `secrets.env` |
+| Playwright | httpx returns bot block or `--playwright` flag | `playwright install chromium` |
+| ScraperAPI | Cloudflare detected, `SCRAPERAPI_KEY` set | Key in `secrets.env` |
+| Zyte | ScraperAPI unavailable, `ZYTE_API_KEY` set | Key in `secrets.env` |
 
 ---
 
 ## Development
 
-### Run tests
-
 ```bash
-.env/bin/pytest tests/ -v
-# 53 tests, all passing
+# Run tests
+.env/bin/pytest tests/ -v        # 54 tests, all passing
+
+# Run a single scrape
+source .env/bin/activate
+datapulse run --url https://books.toscrape.com --target "title and price" --debug
 ```
 
 ### Project structure
 
 ```
 datapulse/
-├── main.py              CLI (Typer) — all commands + crawl loop
+├── main.py              CLI (Typer) — all commands, crawl loop, UI
 ├── job.py               Job dataclass + JSON persistence
 ├── config.py            Config loader (YAML + secrets.env)
 ├── modules/
-│   ├── intent_parser.py Module 1 — Ollama NL→Intent + heuristic fallback
+│   ├── intent_parser.py Module 1 — LLM NL→Intent + heuristic fallback
 │   ├── scope_guard.py   Module 2 — URL dedup, domain filter, depth queue
 │   ├── scraper.py       Module 3 — httpx / Playwright / ScraperAPI / Zyte
-│   ├── extractor.py     Module 4 — clean + chunk + LLM + BS4 extraction
+│   ├── extractor.py     Module 4 — clean + recursive chunk + LLM + BS4
 │   └── formatter.py     Module 5 — JSON / CSV / MD / text output
 └── utils/
-    ├── ollama_client.py Ollama HTTP wrapper (shared by all LLM callers)
-    ├── html_cleaner.py  Trafilatura + BS4 fallback
-    ├── chunker.py       Semantic block splitter
-    ├── validator.py     CSS selector application
-    └── retry.py         @async_retry decorator
+    ├── litellm_client.py OpenAI-compatible LLM client (primary backend)
+    ├── ollama_client.py  Ollama HTTP wrapper (local fallback)
+    ├── html_cleaner.py   BS4 + Trafilatura HTML cleaning
+    ├── chunker.py        Recursive semantic block splitter
+    ├── validator.py      CSS selector application + sampling
+    └── retry.py          @async_retry decorator
 ```
 
 ### Build phases
@@ -253,9 +296,12 @@ datapulse/
 | Phase | Status | Description |
 |---|---|---|
 | 1 | ✅ Done | Scraper pipeline, job persistence, CLI skeleton |
-| 2 | ✅ Done | LLM extraction (Anthropic Haiku), all output formats |
-| 3 | ✅ Done | Ollama intent parser, NL queries, Ollama extraction fallback |
-| 4 | 🔜 Next | ScraperAPI/Zyte integration, resume command, error messages |
+| 2 | ✅ Done | LLM extraction (selector discovery + validation), all output formats |
+| 3 | ✅ Done | LLM intent parser, natural language queries |
+| 3.5 | ✅ Done | LiteLLM / OpenAI-compatible provider support, project-local storage |
+| 3.6 | ✅ Done | Recursive HTML chunker, html_cleaner crash fix, validation prompt fix |
+| 3.7 | ✅ Done | Generic LLM env vars, output/ folder, debug HTML, clean logs + UI |
+| 4 | 🔜 Next | ScraperAPI/Zyte real integration, `resume` polish, error messages |
 | 5 | 🔜 | FastAPI REST server |
 
 ---

@@ -18,7 +18,8 @@ from urllib.parse import urlparse
 
 from datapulse.config import cfg
 from datapulse.job import Intent, IntentType
-from datapulse.utils.ollama_client import generate, parse_json_response, is_available
+from datapulse.utils import litellm_client
+from datapulse.utils.ollama_client import generate as ollama_generate, parse_json_response, is_available as ollama_available
 
 logger = logging.getLogger(__name__)
 
@@ -58,16 +59,21 @@ _STRUCTURED_HINTS = ["price", "rating", "title", "name", "salary", "company",
 def parse_query(query: str) -> Intent:
     """Parse a natural language query into a structured Intent.
 
-    Tries Ollama first. Falls back to heuristic parsing if Ollama is unavailable
-    or returns invalid JSON.
+    Tries LiteLLM proxy first, then Ollama, then falls back to heuristic parsing.
     """
-    if is_available():
+    if litellm_client.is_available():
+        try:
+            return _parse_with_litellm(query)
+        except Exception as exc:
+            logger.warning("LiteLLM intent parsing failed (%s) — trying Ollama", exc)
+
+    if ollama_available():
         try:
             return _parse_with_ollama(query)
         except Exception as exc:
             logger.warning("Ollama intent parsing failed (%s) — using heuristic fallback", exc)
     else:
-        logger.warning("Ollama not available — using heuristic intent parser")
+        logger.warning("No LLM available — using heuristic intent parser")
 
     return _parse_heuristic(query)
 
@@ -89,6 +95,34 @@ def parse_url_intent(
     )
 
 
+# ── LiteLLM parsing ───────────────────────────────────────────────────────────
+
+def _parse_with_litellm(query: str) -> Intent:
+    log_path = cfg.log_dir / "llm_calls.log"
+    prompt = _INTENT_PROMPT.format(query=query)
+    raw = litellm_client.call(prompt, max_tokens=256, temperature=0.0, log_path=log_path)
+    data = litellm_client.parse_json_response(raw)
+
+    url = data.get("url") or _extract_url(query)
+    if not url:
+        raise ValueError("No URL found in query")
+
+    intent_type = _validated_intent_type(data.get("intent_type", "page_content"))
+    depth = _depth_for_intent(intent_type, data.get("depth"))
+
+    content_target = str(data.get("content_target", "")).strip()
+    if not content_target and intent_type in ("structured_data", "deep_content"):
+        content_target = _extract_target_from_query(query, url)
+
+    return Intent(
+        url=_normalise_url(url),
+        intent_type=intent_type,
+        content_target=content_target,
+        max_urls=int(data.get("max_urls") or cfg.scraping.get("max_urls", 25)),
+        depth=depth,
+    )
+
+
 # ── Ollama parsing ────────────────────────────────────────────────────────────
 
 def _parse_with_ollama(query: str) -> Intent:
@@ -96,7 +130,7 @@ def _parse_with_ollama(query: str) -> Intent:
     log_path = cfg.log_dir / "llm_calls.log"
 
     prompt = _INTENT_PROMPT.format(query=query)
-    raw = generate(prompt, model=model, log_path=log_path)
+    raw = ollama_generate(prompt, model=model, log_path=log_path)
     data = parse_json_response(raw)
 
     url = data.get("url") or _extract_url(query)

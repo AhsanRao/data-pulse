@@ -54,12 +54,18 @@ HTML:
 
 _VALIDATION_PROMPT = """\
 You extracted these {count} text samples using the CSS selector `{selector}`.
-The user wants: "{content_target}"
+The user wants to find: "{content_target}"
 
 Samples:
 {samples}
 
-Do these samples match what the user wants? Answer with valid JSON only:
+The selector targets CONTAINER elements, so each sample may contain extra text \
+(descriptions, labels, links) beyond just the target fields — that is expected and fine.
+Answer true if each sample CONTAINS the requested data somewhere within it.
+Answer false only if the samples are completely unrelated to the request \
+(e.g. navigation links, cookie banners, empty elements).
+
+Answer with valid JSON only:
 {{
   "valid": true or false,
   "reason": "<one sentence>"
@@ -80,23 +86,26 @@ Infer a flat JSON schema for each item. Respond ONLY with valid JSON like:
 # ── LLM backend selection ─────────────────────────────────────────────────────
 
 def _llm_call(prompt: str, model: str | None = None, max_tokens: int = 512) -> str:
-    """Route LLM calls: Anthropic if key available, else Ollama, else error."""
+    """Route LLM calls: LiteLLM proxy first, then Anthropic, then Ollama."""
     log_path = cfg.log_dir / "llm_calls.log"
 
-    # Prefer Anthropic when key is set
+    from datapulse.utils import litellm_client
+    if litellm_client.is_available():
+        return litellm_client.call(prompt, model=model, max_tokens=max_tokens, log_path=log_path)
+
     if cfg.anthropic_api_key:
         return _call_anthropic(prompt, model, max_tokens, log_path)
 
-    # Fall back to Ollama
-    from datapulse.utils.ollama_client import is_available, generate, parse_json_response as _
-    if is_available():
+    from datapulse.utils.ollama_client import is_available as ollama_ok
+    if ollama_ok():
         ollama_model = cfg.llm.get("local_model", "qwen2.5:1.5b")
         return _call_ollama(prompt, ollama_model, log_path)
 
     raise RuntimeError(
         "No LLM available. Either:\n"
-        "  1. Add ANTHROPIC_API_KEY to secrets.env\n"
-        "  2. Start Ollama: brew services start ollama && ollama pull qwen2.5:1.5b"
+        "  1. Ensure the LiteLLM proxy is reachable (LITELLM_BASE_URL in secrets.env)\n"
+        "  2. Add ANTHROPIC_API_KEY to secrets.env\n"
+        "  3. Start Ollama: brew services start ollama && ollama pull qwen2.5:1.5b"
     )
 
 
@@ -155,7 +164,7 @@ class SelectorResult:
 def _discover_selector(html_chunk: str, content_target: str) -> SelectorResult:
     prompt = _SELECTOR_PROMPT.format(
         content_target=content_target,
-        html_chunk=html_chunk[:4000],
+        html_chunk=html_chunk[:10000],
     )
     raw = _llm_call(prompt)
     data = _parse_json_response(raw)
@@ -240,6 +249,8 @@ def extract(
         )
 
     # Check at least one LLM backend is reachable
+    from datapulse.utils import litellm_client
+    has_litellm = litellm_client.is_available()
     has_anthropic = bool(cfg.anthropic_api_key)
     try:
         from datapulse.utils.ollama_client import is_available
@@ -247,7 +258,7 @@ def extract(
     except Exception:
         has_ollama = False
 
-    if not has_anthropic and not has_ollama:
+    if not has_litellm and not has_anthropic and not has_ollama:
         logger.warning("No LLM available — returning cleaned text.")
         return ExtractionResult(
             items=[cleaned_text],
@@ -268,8 +279,8 @@ def extract(
             logger.debug("Cached selector '%s' → %d elements", selector_hint, len(elements))
             return _build_result(elements, selector_hint, content_target, cleaned_text)
 
-    for attempt, chunk in enumerate(chunks[:max_retries], start=1):
-        logger.debug("Selector discovery attempt %d/%d", attempt, max_retries)
+    for attempt, chunk in enumerate(chunks, start=1):
+        logger.debug("Selector discovery attempt %d/%d", attempt, len(chunks))
         try:
             sel_result = _discover_selector(chunk, content_target)
         except Exception as exc:
@@ -293,7 +304,7 @@ def extract(
 
         logger.debug("Selector '%s' failed validation — retrying", sel_result.selector)
 
-    logger.warning("All %d selector attempts failed — returning cleaned text.", max_retries)
+    logger.warning("All %d chunks tried, no valid selector found — returning cleaned text.", len(chunks))
     return ExtractionResult(
         items=[cleaned_text],
         selector_used=None,

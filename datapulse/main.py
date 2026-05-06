@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import sys
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -18,29 +20,112 @@ from rich.progress import (
     TaskProgressColumn, TextColumn, TimeElapsedColumn,
 )
 from rich.table import Table
+from rich import box
 
 app = typer.Typer(
     name="datapulse",
-    help="[bold cyan]DataPulse[/] — AI-Driven Intent-Based Web Extraction Agent",
+    help="[bold cyan]DataPulse[/] — AI-Driven Intent-Based Web Extraction",
     rich_markup_mode="rich",
     no_args_is_help=True,
 )
 console = Console()
+err_console = Console(stderr=True)
 
+
+# ── Logging ───────────────────────────────────────────────────────────────────
 
 def _setup_logging(debug: bool = False) -> None:
     from datapulse.config import cfg
 
-    level = logging.DEBUG if debug else logging.WARNING
+    level = logging.DEBUG if debug else logging.INFO
     log_file = cfg.log_dir / "datapulse.log"
+
+    fmt = "%(asctime)s  %(name)-28s  %(levelname)-7s  %(message)s"
+    datefmt = "%H:%M:%S"
+
     logging.basicConfig(
         level=level,
-        format="%(message)s",
+        format=fmt,
+        datefmt=datefmt,
         handlers=[
-            RichHandler(console=Console(stderr=True), show_path=False, markup=True),
-            logging.FileHandler(log_file),
+            RichHandler(
+                console=err_console,
+                show_path=False,
+                markup=True,
+                log_time_format="%H:%M:%S",
+                rich_tracebacks=False,
+                # In non-debug mode only show WARNING+ on console
+                level=logging.DEBUG if debug else logging.WARNING,
+            ),
+            logging.FileHandler(log_file, encoding="utf-8"),
         ],
+        force=True,
     )
+
+    # Suppress noisy third-party loggers — always, even in debug mode
+    _QUIET = [
+        "trafilatura", "trafilatura.core", "trafilatura.htmlprocessing",
+        "trafilatura.utils", "trafilatura.filters",
+        "httpx", "httpcore", "urllib3",
+        "playwright", "asyncio",
+        "charset_normalizer",
+    ]
+    for name in _QUIET:
+        logging.getLogger(name).setLevel(logging.ERROR)
+
+
+# ── Output path helper ────────────────────────────────────────────────────────
+
+def _resolve_output(output: Path | None) -> Path | None:
+    """If output is a bare filename, route it into the output/ folder."""
+    if output is None:
+        return None
+    if output.parent == Path("."):
+        out_dir = Path("output")
+        out_dir.mkdir(exist_ok=True)
+        return out_dir / output
+    output.parent.mkdir(parents=True, exist_ok=True)
+    return output
+
+
+def _save_debug_html(job_id: str, url: str, raw_html: str, clean_html: str) -> None:
+    """Save raw and cleaned HTML snapshots to output/debug/ for inspection."""
+    slug = re.sub(r"[^\w]", "_", url)[:50].strip("_")
+    debug_dir = Path("output") / "debug"
+    debug_dir.mkdir(parents=True, exist_ok=True)
+    prefix = f"{job_id}_{slug}"
+    (debug_dir / f"{prefix}_raw.html").write_text(raw_html, encoding="utf-8")
+    (debug_dir / f"{prefix}_clean.html").write_text(clean_html, encoding="utf-8")
+    logging.getLogger(__name__).debug(
+        "Debug HTML saved → output/debug/%s_{raw,clean}.html", prefix
+    )
+
+
+# ── Banner ────────────────────────────────────────────────────────────────────
+
+def _print_banner() -> None:
+    from datapulse import __version__
+    from rich.text import Text
+    from rich.align import Align
+
+    logo_lines = [
+        r"  ____        _        ____        _          ",
+        r" |  _ \  __ _| |_ __ _|  _ \ _   _| |___  ___ ",
+        r" | | | |/ _` | __/ _` | |_) | | | | / __|/ _ \\",
+        r" | |_| | (_| | || (_| |  __/| |_| | \__ \  __/",
+        r" |____/ \__,_|\__\__,_|_|    \__,_|_|___/\___|",
+    ]
+
+    console.print()
+    for line in logo_lines:
+        console.print(Align.center(f"[bold cyan]{line}[/]"))
+
+    tagline = Text.assemble(
+        ("  AI-Driven Web Extraction  ", "bold white on #1a1a2e"),
+        ("  v" + __version__ + "  ", "dim on #1a1a2e"),
+    )
+    console.print(Align.center(tagline))
+    console.print()
 
 
 # ── run ───────────────────────────────────────────────────────────────────────
@@ -49,37 +134,42 @@ def _setup_logging(debug: bool = False) -> None:
 def run(
     query: Optional[str] = typer.Argument(None,
         help='Natural language query, e.g. "get book prices from https://books.toscrape.com"'),
-    url: Optional[str] = typer.Option(None, "--url", "-u", help="Target URL (overrides URL in query)"),
+    url: Optional[str] = typer.Option(None, "--url", "-u", help="Target URL"),
     target: Optional[str] = typer.Option(None, "--target", "-t",
         help='What to extract, e.g. "product name and price"'),
-    output: Optional[Path] = typer.Option(None, "--output", "-o", help="Write output to file"),
-    fmt: str = typer.Option("json", "--format", "-f", help="Output format: text|json|csv|md"),
+    output: Optional[Path] = typer.Option(None, "--output", "-o",
+        help="Output file (auto-placed in output/ if no directory given)"),
+    fmt: str = typer.Option("json", "--format", "-f", help="json | csv | md | text"),
     max_urls: Optional[int] = typer.Option(None, "--max-urls", help="Max URLs to crawl"),
     depth: Optional[int] = typer.Option(None, "--depth", help="Crawl depth (0=seed only)"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Parse intent only, skip fetch"),
     force_playwright: bool = typer.Option(False, "--playwright", help="Force Playwright layer"),
-    debug: bool = typer.Option(False, "--debug", help="Enable debug logging"),
+    debug: bool = typer.Option(False, "--debug",
+        help="Verbose logging + save raw/clean HTML snapshots to output/debug/"),
 ):
     """Run a full extraction from a natural language query or --url flag."""
     _setup_logging(debug)
+    _print_banner()
 
     if not query and not url:
         console.print("[red]Error:[/] Provide a query or --url <URL>.\n")
-        console.print("Examples:")
-        console.print('  datapulse run "get book titles and prices from https://books.toscrape.com"')
-        console.print("  datapulse run --url https://books.toscrape.com --target 'book title and price'")
+        console.print("  datapulse run [cyan]\"get book titles from https://books.toscrape.com\"[/]")
+        console.print("  datapulse run [cyan]--url https://books.toscrape.com --target 'title and price'[/]")
         raise typer.Exit(1)
+
+    resolved_output = _resolve_output(output)
 
     asyncio.run(_run_pipeline(
         query=query,
         url_override=url,
         target_override=target,
         fmt=fmt,
-        output=output,
+        output=resolved_output,
         max_urls_override=max_urls,
         depth_override=depth,
         dry_run=dry_run,
         force_playwright=force_playwright,
+        debug=debug,
     ))
 
 
@@ -93,6 +183,7 @@ async def _run_pipeline(
     depth_override: Optional[int],
     dry_run: bool,
     force_playwright: bool,
+    debug: bool = False,
 ) -> None:
     from datapulse.config import cfg
     from datapulse.job import Job
@@ -101,10 +192,12 @@ async def _run_pipeline(
     from datapulse.modules.scraper import scrape, extract_links
     from datapulse.modules.extractor import extract
     from datapulse.modules.formatter import format_result
+    from datapulse.utils.html_cleaner import clean_html_keep_tags
+
+    t_start = time.monotonic()
 
     # ── Build intent ──────────────────────────────────────────────────────────
     if url_override:
-        # Explicit --url path: no LLM parsing needed
         intent = parse_url_intent(
             url=url_override,
             intent_type="structured_data" if target_override else "page_content",
@@ -114,15 +207,13 @@ async def _run_pipeline(
         )
         raw_query = f"--url {url_override}" + (f" --target '{target_override}'" if target_override else "")
     else:
-        # Natural language path: Ollama intent parser
-        console.print("[dim]Parsing intent…[/]")
+        console.print(" [dim]Parsing intent…[/]")
         try:
             intent = parse_query(query)  # type: ignore[arg-type]
         except ValueError as exc:
-            console.print(f"[red]Could not parse query:[/] {exc}")
+            console.print(f" [red]✗ Could not parse query:[/] {exc}")
             raise typer.Exit(1)
 
-        # CLI overrides take precedence over parsed values
         if max_urls_override:
             intent.max_urls = max_urls_override
         if depth_override is not None:
@@ -142,17 +233,20 @@ async def _run_pipeline(
     job.status = "running"
     job.save()
 
-    mode_tag = f"[green]{intent.content_target}[/]" if intent.content_target else "[dim]full text[/]"
-    console.print(Panel(
-        f"[bold cyan]DataPulse[/] · Job [dim]{job.job_id}[/]\n"
-        f"URL: [link={intent.url}]{intent.url}[/link]\n"
-        f"Intent: [cyan]{intent.intent_type}[/]  |  Target: {mode_tag}\n"
-        f"Format: [green]{fmt}[/]  |  Max URLs: [green]{intent.max_urls}[/]  |  Depth: [green]{intent.depth}[/]",
-        border_style="cyan",
-    ))
+    layer_label = "[yellow]playwright[/]" if force_playwright else "[green]auto[/]"
+    target_label = f"[cyan]{intent.content_target}[/]" if intent.content_target else "[dim]full text[/]"
+
+    console.print(
+        f" [bold]Job[/]     [dim]{job.job_id}[/]\n"
+        f" [bold]URL[/]     {intent.url}\n"
+        f" [bold]Target[/]  {target_label}\n"
+        f" [bold]Layer[/]   {layer_label}  [dim]·[/]  "
+        f"[bold]Format[/] [green]{fmt}[/]  [dim]·[/]  "
+        f"[bold]Max URLs[/] {intent.max_urls}\n"
+    )
 
     if dry_run:
-        console.print("[yellow]Dry run — skipping fetch.[/]")
+        console.print(" [yellow]Dry run — skipping fetch.[/]")
         console.print_json(json.dumps({"job_id": job.job_id, "intent": {
             "url": intent.url, "intent_type": intent.intent_type,
             "content_target": intent.content_target,
@@ -162,54 +256,69 @@ async def _run_pipeline(
 
     # ── Crawl loop ────────────────────────────────────────────────────────────
     all_results: list = []
+    inferred_schema: list[str] = []
     concurrency = cfg.scraping.get("concurrency", 4)
     sem = asyncio.Semaphore(concurrency)
 
     with Progress(
         SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
+        TextColumn(" [progress.description]{task.description}"),
+        BarColumn(bar_width=28),
         MofNCompleteColumn(),
         TimeElapsedColumn(),
         console=console,
         transient=False,
     ) as progress:
         total_task = progress.add_task(
-            f"[cyan]Crawling {intent.url}[/]",
+            f"[cyan]Crawling[/]",
             total=min(intent.max_urls, len(job.urls_pending) or 1),
         )
 
         while job.urls_pending:
-            # Take a batch up to concurrency limit
             batch = job.urls_pending[:concurrency]
 
             async def process_url(url: str) -> None:
                 async with sem:
-                    progress.update(total_task, description=f"Fetching [cyan]{url[:60]}[/]…")
+                    short_url = url[:70] + "…" if len(url) > 70 else url
+                    progress.update(total_task,
+                        description=f"[cyan]Fetching[/] [dim]{short_url}[/]")
+
                     scrape_result = await scrape(url, force_playwright=force_playwright)
 
                     if scrape_result.error or not scrape_result.html:
-                        console.print(f"[red]✗[/] {url} — {scrape_result.error or 'empty response'}")
+                        progress.print(
+                            f" [red]✗[/] {short_url}\n"
+                            f"   [dim]{scrape_result.error or 'empty response'}[/]"
+                        )
                         job.mark_url_failed(url)
                         return
 
-                    layer_colors = {"httpx": "green", "playwright": "yellow",
-                                    "scraperapi": "magenta", "zyte": "blue"}
-                    badge = layer_colors.get(scrape_result.layer_used, "white")
+                    layer_badges = {
+                        "httpx": "[green]httpx[/]",
+                        "playwright": "[yellow]playwright[/]",
+                        "scraperapi": "[magenta]scraperapi[/]",
+                        "zyte": "[blue]zyte[/]",
+                    }
+                    layer_tag = layer_badges.get(scrape_result.layer_used, scrape_result.layer_used)
 
-                    # For url_list intent: just collect links, skip extraction
+                    # Save debug HTML snapshots before extraction
+                    if debug:
+                        clean_snap = clean_html_keep_tags(scrape_result.html)
+                        _save_debug_html(job.job_id, url, scrape_result.html, clean_snap)
+
                     if intent.intent_type == "url_list":
                         links = extract_links(scrape_result.html, url)
-                        result_data = {"url": url, "links": links}
                         all_results.extend(links)
-                        job.mark_url_done(url, result=result_data)
-                        console.print(
-                            f"[{badge}]●[/] {url[:60]} → [bold]{len(links)}[/] links"
+                        job.mark_url_done(url, result={"url": url, "links": links})
+                        progress.print(
+                            f" [green]✓[/] {layer_tag}  [dim]{short_url}[/]"
+                            f"  →  [bold]{len(links)}[/] links"
                         )
                     else:
-                        # Extract content
                         selector_hint = job.selector_cache.get(url) or \
                                         _find_pattern_selector(url, job.selector_cache)
+                        progress.update(total_task,
+                            description=f"[cyan]Extracting[/] [dim]{short_url}[/]")
                         extraction = extract(
                             scrape_result.html,
                             url=scrape_result.url,
@@ -218,29 +327,39 @@ async def _run_pipeline(
                         )
                         if extraction.selector_used:
                             job.selector_cache[url] = extraction.selector_used
+                        if extraction.schema_fields and extraction.schema_fields != ["value"]:
+                            inferred_schema[:] = extraction.schema_fields
 
-                        result_data = {
+                        all_results.extend(extraction.items)
+                        job.mark_url_done(url, result={
                             "url": scrape_result.url,
                             "items": extraction.items,
                             "selector": extraction.selector_used,
                             "method": extraction.method,
-                        }
-                        all_results.extend(extraction.items)
-                        job.mark_url_done(url, result=result_data)
-                        console.print(
-                            f"[{badge}]●[/] {url[:60]} → "
-                            f"[bold]{len(extraction.items)}[/] items "
-                            f"[dim]({extraction.method})[/]"
+                        })
+
+                        method_tag = (
+                            "[green]selector[/]" if extraction.method == "llm_selector"
+                            else "[dim]text[/]"
+                        )
+                        selector_hint_str = (
+                            f"  [dim]{extraction.selector_used}[/]"
+                            if extraction.selector_used else ""
+                        )
+                        progress.print(
+                            f" [green]✓[/] {layer_tag}  [dim]{short_url}[/]\n"
+                            f"   {method_tag}  [bold]{len(extraction.items)}[/] items"
+                            f"{selector_hint_str}"
                         )
 
-                    # Deep crawl: discover and enqueue new URLs from this page
                     if should_follow_links(job):
                         links = extract_links(scrape_result.html, url)
                         added = enqueue_discovered_links(links, job)
                         if added:
                             progress.update(
                                 total_task,
-                                total=min(intent.max_urls, len(job.urls_processed) + len(job.urls_pending)),
+                                total=min(intent.max_urls,
+                                          len(job.urls_processed) + len(job.urls_pending)),
                             )
 
                     progress.advance(total_task)
@@ -250,16 +369,12 @@ async def _run_pipeline(
     # ── Format and output ─────────────────────────────────────────────────────
     from datapulse.modules.extractor import ExtractionResult
 
-    # Build a combined ExtractionResult from all collected items
-    # For url_list: items are link dicts; we materialise them as text
     if intent.intent_type == "url_list":
         display_items = [f"{lnk.get('text', '')} → {lnk.get('href', '')}" for lnk in all_results]
         schema_fields = ["text", "href"]
     else:
         display_items = [str(i) for i in all_results if i]
-        schema_fields = job.results[0].get("items", [{}]) if job.results else []
-        # Try to get schema from first successful extraction
-        schema_fields = ["value"]
+        schema_fields = inferred_schema or ["value"]
 
     combined = ExtractionResult(
         items=display_items or ["No data extracted."],
@@ -272,32 +387,41 @@ async def _run_pipeline(
     include_meta = cfg.output.get("include_metadata", True)
     formatted = format_result(combined, url=intent.url, fmt=fmt, include_metadata=include_meta)
 
+    elapsed = time.monotonic() - t_start
     console.rule("[dim]Results[/]")
+
     if output:
-        output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text(formatted)
-        console.print(f"[green]✓[/] Written to [bold]{output}[/]  ({len(display_items)} items)")
+        output.write_text(formatted, encoding="utf-8")
+        console.print(f"\n [green]✓[/] [bold]{len(display_items)}[/] items  →  [bold]{output}[/]")
+        if debug:
+            console.print(f"   [dim]Debug HTML snapshots → output/debug/[/]")
     else:
         if fmt == "json":
             console.print_json(formatted)
         else:
             console.print(formatted)
-    console.rule()
+        console.print(f"\n [green]✓[/] [bold]{len(display_items)}[/] items extracted")
 
     job.status = "complete" if not job.urls_failed else "partial"
     job.save()
 
     status_color = "green" if job.status == "complete" else "yellow"
+    selector_str = (
+        f"  [dim]selector: {combined.selector_used}[/]"
+        if combined.selector_used else ""
+    )
+    console.rule()
     console.print(
-        f"[{status_color}]{job.status.upper()}[/] · "
-        f"[bold]{len(job.urls_processed)}[/] URLs · "
-        f"[bold]{len(display_items)}[/] items · "
-        f"[dim]{job.job_id}[/]"
+        f" [{status_color}]{job.status.upper()}[/]"
+        f"  [bold]{len(job.urls_processed)}[/] URL{'s' if len(job.urls_processed) != 1 else ''}"
+        f"  [dim]·[/]  [bold]{len(display_items)}[/] items"
+        f"  [dim]·[/]  {elapsed:.1f}s"
+        f"{selector_str}"
+        f"\n [dim]{job.job_id}[/]\n"
     )
 
 
 def _find_pattern_selector(url: str, cache: dict[str, str]) -> str | None:
-    """Return a cached selector if URL matches a known domain pattern."""
     from urllib.parse import urlparse
     domain = urlparse(url).netloc
     for cached_url, selector in cache.items():
@@ -315,20 +439,20 @@ def resume(
 ):
     """Resume a previously interrupted job from its last checkpoint."""
     _setup_logging(debug)
+    _print_banner()
     from datapulse.job import Job
 
     try:
         job = Job.load(job_id)
     except FileNotFoundError:
-        console.print(f"[red]Job not found:[/] {job_id}")
+        console.print(f" [red]✗ Job not found:[/] {job_id}")
         raise typer.Exit(1)
 
     if job.status == "complete":
-        console.print(f"[green]Job {job_id} is already complete.[/]")
+        console.print(f" [green]✓ Job {job_id} is already complete.[/]")
         raise typer.Exit(0)
 
-    console.print(f"Resuming [bold]{job_id}[/] — {len(job.urls_pending)} URLs remaining")
-    # Re-run the pipeline with the existing job's intent
+    console.print(f" Resuming [bold]{job_id}[/]  —  {len(job.urls_pending)} URLs remaining\n")
     asyncio.run(_run_pipeline(
         query=None,
         url_override=job.intent.url,
@@ -339,6 +463,7 @@ def resume(
         depth_override=job.intent.depth,
         dry_run=False,
         force_playwright=False,
+        debug=debug,
     ))
 
 
@@ -351,27 +476,39 @@ def jobs(
     """List recent jobs with status."""
     from datapulse.job import Job
 
+    _print_banner()
     all_jobs = Job.list_all()[:limit]
     if not all_jobs:
-        console.print("[dim]No jobs found.[/]")
+        console.print(" [dim]No jobs found.[/]")
         return
 
-    table = Table(title="DataPulse Jobs", border_style="cyan")
-    table.add_column("Job ID", style="dim")
-    table.add_column("Status")
-    table.add_column("Done", justify="right")
+    table = Table(
+        title="Recent Jobs",
+        box=box.SIMPLE_HEAD,
+        border_style="dim",
+        show_edge=False,
+        pad_edge=True,
+    )
+    table.add_column("Job ID", style="dim", no_wrap=True)
+    table.add_column("Status", width=10)
+    table.add_column("Items", justify="right")
     table.add_column("Pending", justify="right")
-    table.add_column("Query", max_width=55, no_wrap=True)
-    table.add_column("Created")
+    table.add_column("Query / URL", max_width=60, no_wrap=True)
+    table.add_column("Created", style="dim")
 
-    colors = {"complete": "green", "running": "cyan", "failed": "red",
-              "partial": "yellow", "pending": "dim"}
+    colors = {
+        "complete": "green", "running": "cyan", "failed": "red",
+        "partial": "yellow", "pending": "dim",
+    }
     for j in all_jobs:
         c = colors.get(j["status"], "white")
         table.add_row(
-            j["job_id"], f"[{c}]{j['status']}[/]",
-            str(j["urls_processed"]), str(j["urls_pending"]),
-            j["query"], j["created_at"][:19].replace("T", " "),
+            j["job_id"],
+            f"[{c}]{j['status']}[/]",
+            str(j["urls_processed"]),
+            str(j["urls_pending"]),
+            j["query"],
+            j["created_at"][:19].replace("T", " "),
         )
     console.print(table)
 
@@ -385,30 +522,41 @@ def inspect(
     """Show detailed info about a specific job."""
     from datapulse.job import Job
 
+    _print_banner()
     try:
         job = Job.load(job_id)
     except FileNotFoundError:
-        console.print(f"[red]Job not found:[/] {job_id}")
+        console.print(f" [red]✗ Job not found:[/] {job_id}")
         raise typer.Exit(1)
 
+    status_color = {
+        "complete": "green", "running": "cyan", "failed": "red",
+        "partial": "yellow",
+    }.get(job.status, "white")
+
     console.print(Panel(
-        f"[bold]Job:[/] {job.job_id}\n"
-        f"[bold]Status:[/] {job.status}\n"
-        f"[bold]Query:[/] {job.query}\n"
-        f"[bold]URL:[/] {job.intent.url}\n"
-        f"[bold]Intent:[/] {job.intent.intent_type}  |  Target: {job.intent.content_target or '—'}\n"
-        f"[bold]Processed:[/] {len(job.urls_processed)}  |  "
-        f"Pending: {len(job.urls_pending)}  |  Failed: {len(job.urls_failed)}\n"
-        f"[bold]Results:[/] {len(job.results)} items\n"
-        f"[bold]Output:[/] {job.output_path or 'stdout'}  ({job.output_format})\n"
-        f"[bold]Created:[/] {job.created_at}\n"
-        f"[bold]Updated:[/] {job.updated_at}",
-        title="Job Details", border_style="cyan",
+        f"[bold]Job ID[/]     {job.job_id}\n"
+        f"[bold]Status[/]     [{status_color}]{job.status}[/]\n"
+        f"[bold]Query[/]      {job.query}\n"
+        f"[bold]URL[/]        {job.intent.url}\n"
+        f"[bold]Target[/]     {job.intent.content_target or '[dim]—[/]'}\n"
+        f"[bold]Processed[/]  {len(job.urls_processed)}  "
+        f"[dim]·[/]  Pending {len(job.urls_pending)}  "
+        f"[dim]·[/]  Failed {len(job.urls_failed)}\n"
+        f"[bold]Results[/]    {len(job.results)} items\n"
+        f"[bold]Output[/]     {job.output_path or '[dim]stdout[/]'}  [dim]({job.output_format})[/]\n"
+        f"[bold]Created[/]    {job.created_at}\n"
+        f"[bold]Updated[/]    {job.updated_at}",
+        title="[bold cyan]Job Details[/]",
+        border_style="cyan",
+        padding=(1, 2),
     ))
+
     if job.selector_cache:
-        console.print("[bold]Selector cache:[/]")
+        console.print(" [bold]Selector cache:[/]")
         for pattern, sel in job.selector_cache.items():
-            console.print(f"  [dim]{pattern}[/] → [green]{sel}[/]")
+            console.print(f"  [dim]{pattern}[/]  →  [green]{sel}[/]")
+        console.print()
 
 
 # ── config ────────────────────────────────────────────────────────────────────
@@ -416,10 +564,11 @@ def inspect(
 @app.command(name="config")
 def config_cmd():
     """Open datapulse.config.yaml in the default editor."""
-    import os, subprocess
+    import os
+    import subprocess
     p = Path.cwd() / "datapulse.config.yaml"
     if not p.exists():
-        console.print(f"[yellow]Config not found: {p}[/]")
+        console.print(f" [yellow]Config not found: {p}[/]")
         return
     subprocess.run([os.environ.get("EDITOR", "vi"), str(p)])
 

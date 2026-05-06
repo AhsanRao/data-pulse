@@ -15,8 +15,9 @@
 | CLI command | `datapulse` (after `source .env/bin/activate`) |
 | Config file | `datapulse.config.yaml` |
 | Venv | `.env/` (Python 3.14) — **this directory is the venv, not a dotenv file** |
-| API keys file | `secrets.env` (gitignored) — copy from `.env.example` |
-| Ollama model | `qwen2.5:1.5b` — must be running: `brew services start ollama` |
+| API keys file | `secrets.env` (gitignored — copy from `.env.example`) |
+| Primary LLM | `mueen-80b` via LiteLLM proxy at `http://10.8.124.144:4000` |
+| Ollama model | `qwen2.5:1.5b` — fallback only; needs `brew services start ollama` |
 | Job store | `~/.datapulse/jobs/` |
 | LLM logs | `~/.datapulse/logs/llm_calls.log` |
 | Test runner | `.env/bin/pytest tests/ -v` |
@@ -33,8 +34,8 @@ Natural language query  OR  --url flag
           │
    ┌──────▼────────────────┐
    │ 1. Intent Parser        │  datapulse/modules/intent_parser.py
-   │    ✅ Phase 3 Done      │  Ollama qwen2.5:1.5b → structured Intent
-   │                         │  Heuristic fallback when Ollama is down
+   │    ✅ Done              │  LiteLLM mueen-80b → structured Intent
+   │                         │  Ollama fallback → heuristic fallback
    └──────┬────────────────┘
           │  Intent { url, intent_type, content_target, max_urls, depth }
    ┌──────▼────────────────┐
@@ -53,7 +54,7 @@ Natural language query  OR  --url flag
    ┌──────▼────────────────┐
    │ 4. Extractor            │  datapulse/modules/extractor.py
    │    ✅ Done              │  Trafilatura clean → semantic chunks
-   │                         │  → LLM selector discovery (Anthropic or Ollama)
+   │                         │  → LLM selector discovery (LiteLLM primary)
    │                         │  → Validation gate (5-sample LLM verify)
    │                         │  → BeautifulSoup programmatic extraction
    │                         │  → LLM schema inference (field names)
@@ -66,10 +67,11 @@ Natural language query  OR  --url flag
    └─────────────────────────┘
 ```
 
-**LLM backends (auto-selected):**
-1. Anthropic Claude Haiku — if `ANTHROPIC_API_KEY` in `secrets.env`
-2. Ollama qwen2.5:1.5b — if Ollama is running (fallback and intent parsing)
-3. Text-only mode — if neither is available
+**LLM backends (auto-selected in priority order):**
+1. **LiteLLM proxy → mueen-80b** — if proxy at `LITELLM_BASE_URL` is reachable (primary)
+2. **Anthropic Claude Haiku** — if `ANTHROPIC_API_KEY` set and LiteLLM unreachable
+3. **Ollama qwen2.5:1.5b** — if Ollama is running and both above are unavailable
+4. **Text-only mode** — if no LLM is available
 
 ---
 
@@ -82,14 +84,15 @@ datapulse/
 ├── config.py                Config loader: datapulse.config.yaml + secrets.env
 │
 ├── modules/
-│   ├── intent_parser.py     Module 1 — Ollama NL → Intent + heuristic fallback
+│   ├── intent_parser.py     Module 1 — LiteLLM/Ollama NL → Intent + heuristic fallback
 │   ├── scope_guard.py       Module 2 — URL dedup, domain filter, cap, deep queue
 │   ├── scraper.py           Module 3 — httpx / Playwright / ScraperAPI / Zyte
-│   ├── extractor.py         Module 4 — clean/chunk/LLM/validate/extract (Anthropic OR Ollama)
+│   ├── extractor.py         Module 4 — clean/chunk/LLM/validate/extract
 │   └── formatter.py         Module 5 — JSON/CSV/MD/text renderer + metadata
 │
 └── utils/
-    ├── ollama_client.py     Ollama HTTP wrapper — generate(), parse_json_response(), is_available()
+    ├── litellm_client.py    LiteLLM proxy wrapper — call(), is_available(), parse_json_response()
+    ├── ollama_client.py     Ollama HTTP wrapper (fallback) — generate(), is_available()
     ├── html_cleaner.py      Trafilatura wrapper + BS4 fallback
     ├── chunker.py           Semantic block splitter (6000 char chunks)
     ├── validator.py         CSS selector application via BS4
@@ -97,9 +100,9 @@ datapulse/
 
 tests/
 ├── test_scraper.py          Phase 1: scraper, links, cleaner, chunker, job, retry (12 tests)
-├── test_intent_parser.py    Phase 1+3: stub + Ollama path + heuristic (19 tests)
-├── test_extractor.py        Phase 2: selector discovery, validation, full pipeline (11 tests)
-└── test_formatter.py        Phase 2: JSON/CSV/MD/text output (10 tests)
+├── test_intent_parser.py    Phase 1+3: stub + LiteLLM path + heuristic (19 tests)
+├── test_extractor.py        Phase 2: selector discovery, validation, pipeline (11 tests)
+└── test_formatter.py        Phase 2: JSON/CSV/MD/text output (12 tests)
 
 datapulse.config.yaml        User config (all settings + defaults)
 secrets.env                  API keys (gitignored — copy from .env.example)
@@ -121,28 +124,29 @@ TODO.md                      This file
 2. **Always use `.env/bin/*` for all commands.**
    System Python is Homebrew 3.14 — packages are not there.
 
-3. **LLM routing in `extractor._llm_call()`:**
-   Checks `cfg.anthropic_api_key` first → falls back to Ollama → raises if neither.
-   Same routing used for selector discovery, validation gate, and schema inference.
+3. **LLM routing in `extractor._llm_call()` and `intent_parser.parse_query()`:**
+   LiteLLM proxy checked first → Anthropic → Ollama → error/heuristic.
+   LiteLLM uses OpenAI-compatible `/v1/chat/completions` via `httpx` (no extra SDK needed).
 
-4. **Intent parser has two modes:**
-   - Ollama available → `_parse_with_ollama()` → structured JSON from qwen2.5:1.5b
-   - Ollama down → `_parse_heuristic()` → regex URL extraction + keyword intent detection
-   Both return the same `Intent` dataclass — the rest of the pipeline is unaware.
+4. **LiteLLM config in `secrets.env`:**
+   - `LITELLM_BASE_URL=http://10.8.124.144:4000`
+   - `LITELLM_API_KEY=my-litellm-key-2026`
+   - `LITELLM_MODEL=mueen-80b`
+   All three are read via `config.py` properties and have hardcoded fallback defaults.
 
-5. **The crawl loop in `main._run_pipeline()` handles all intent types:**
+5. **Intent parser priority:**
+   `_parse_with_litellm()` → `_parse_with_ollama()` → `_parse_heuristic()`
+   All return the same `Intent` dataclass — the rest of the pipeline is unaware.
+
+6. **The crawl loop in `main._run_pipeline()` handles all intent types:**
    - `url_list`: collect links only, no extraction
    - `page_content` / `structured_data`: extract + format each URL
    - `deep_content`: extract + enqueue new links via `scope_guard.enqueue_discovered_links()`
    Concurrency controlled by `asyncio.Semaphore(concurrency)` (default 4).
 
-6. **Selector cache in Job.selector_cache:**
+7. **Selector cache in Job.selector_cache:**
    Pattern: `{url: selector}`. On resume or deep crawl, `_find_pattern_selector()` in
    `main.py` matches by domain so pages with the same template reuse the selector.
-
-7. **Ollama format=json mode:**
-   `ollama_client.generate()` always sends `"format": "json"` for deterministic output.
-   For free-form responses use `generate_text()`.
 
 8. **Playwright scroll** stops when `document.body.scrollHeight` stops growing across
    two consecutive increments. Cap: `playwright.max_scroll_attempts` (default 30).
@@ -169,27 +173,30 @@ TODO.md                      This file
   validation gate → programmatic extraction → schema inference
 - [x] `formatter.py` — JSON, CSV, Markdown table, plain text + metadata
 - [x] `main.py` — `--target` flag wires into extractor; selector cached in job
-- [x] **35 tests passing**
 
 ### ✅ Phase 3 — Intent Parser + Local Model (Complete)
 
 - [x] Ollama installed via Homebrew (`brew services start ollama`)
-- [x] `qwen2.5:1.5b` model pulled (986 MB — download started, completes automatically)
+- [x] `qwen2.5:1.5b` model pulled
 - [x] `utils/ollama_client.py` — HTTP wrapper: `generate()`, `generate_text()`,
   `is_available()`, `list_models()`, `parse_json_response()`
-- [x] `intent_parser.py` replaced stub — Ollama primary + heuristic fallback
-- [x] `extractor.py` LLM routing — Anthropic → Ollama → text-only
+- [x] `intent_parser.py` — Ollama primary + heuristic fallback
 - [x] `scope_guard.py` — depth-aware URL queue + `enqueue_discovered_links()`
 - [x] `main.py` — full NL query path + concurrent deep crawl loop
-- [x] **53/53 tests passing** (`.env/bin/pytest tests/ -v`)
 
-> **To test end-to-end with Ollama:**
-> ```bash
-> source .env/bin/activate
-> # Wait for model: ollama list  (should show qwen2.5:1.5b)
-> datapulse run "get book titles and prices from https://books.toscrape.com"
-> datapulse run "give me all the links on https://news.ycombinator.com"
-> ```
+### ✅ Phase 3.5 — LiteLLM Proxy Integration (Complete, Session 2)
+
+- [x] `utils/litellm_client.py` — OpenAI-compatible `httpx` wrapper for LiteLLM proxy
+  - `is_available()` — health check via `/v1/models`
+  - `call()` — POST to `/v1/chat/completions`, returns response text
+  - `parse_json_response()` — strips markdown fences, parses JSON
+- [x] `config.py` — `litellm_api_key`, `litellm_base_url`, `litellm_model` properties
+- [x] `extractor.py` — LiteLLM first in `_llm_call()` routing
+- [x] `intent_parser.py` — `_parse_with_litellm()` added as first choice
+- [x] `secrets.env` — `LITELLM_BASE_URL`, `LITELLM_API_KEY`, `LITELLM_MODEL` added
+- [x] Tests updated — mock `litellm_client.is_available` + `litellm_client.call`
+- [x] **54/54 tests passing** (`.env/bin/pytest tests/ -v`)
+- [x] Proxy confirmed reachable: `http://10.8.124.144:4000`
 
 ---
 
@@ -212,8 +219,8 @@ TODO.md                      This file
 - [ ] **Actionable error messages** for common failures:
   - 403/429: "Try `--playwright` or add SCRAPERAPI_KEY to secrets.env"
   - No items extracted: "Try a more specific `--target` description"
+  - LiteLLM unreachable: "Check LITELLM_BASE_URL and that the proxy is running"
   - Ollama 404 (model missing): "Run: ollama pull qwen2.5:1.5b"
-  - Ollama connection refused: "Run: brew services start ollama"
 
 - [ ] **Integration tests** matching spec Section 6:
   - UC-01: link extraction from `https://news.ycombinator.com`
@@ -241,11 +248,11 @@ TODO.md                      This file
 
 ```
 tests/test_scraper.py       12 tests  — scraper, links, cleaner, chunker, job, retry
-tests/test_intent_parser.py 19 tests  — URL extraction, heuristics, Ollama path (mocked)
+tests/test_intent_parser.py 19 tests  — URL extraction, heuristics, LiteLLM path (mocked)
 tests/test_extractor.py     11 tests  — selector discovery, validation, pipeline (mocked)
-tests/test_formatter.py     11 tests  — JSON, CSV, MD, text output
+tests/test_formatter.py     12 tests  — JSON, CSV, MD, text output
 
-Total: 53/53 passing  (.env/bin/pytest tests/ -v)
+Total: 54/54 passing  (.env/bin/pytest tests/ -v)
 ```
 
 ---
@@ -256,24 +263,24 @@ Total: 53/53 passing  (.env/bin/pytest tests/ -v)
 # Activate venv
 source .env/bin/activate
 
-# Start Ollama (required for NL queries and extraction without Anthropic key)
-brew services start ollama
-
-# Check model is ready
-ollama list   # should show: qwen2.5:1.5b
-
 # Run tests
 .env/bin/pytest tests/ -v
 
-# ── NL query (Phase 3) ──
+# Verify LiteLLM proxy is up
+.env/bin/python -c "from datapulse.utils import litellm_client; print(litellm_client.is_available())"
+
+# ── NL query ──
 datapulse run "get book titles and prices from https://books.toscrape.com"
 datapulse run "give me all the links on https://news.ycombinator.com"
 datapulse run "title and summary of each article on https://blog.example.com"
 
-# ── --url flag (Phase 1/2) ──
+# ── --url flag ──
 datapulse run --url https://books.toscrape.com --target "book title and price" --format json
 datapulse run --url https://books.toscrape.com --format csv --output books.csv
 datapulse run --url https://books.toscrape.com --format text  # no LLM needed
+
+# ── JS-heavy pages ──
+datapulse run --url "https://example.com/catalog" --target "name and url" --playwright --format json --output out.json
 
 # ── Job management ──
 datapulse jobs
@@ -287,34 +294,33 @@ datapulse run --url https://example.com --dry-run
 
 ---
 
-## Ollama Setup (one-time)
-
-```bash
-# Install
-brew install ollama
-
-# Start as background service (auto-restarts on login)
-brew services start ollama
-
-# Pull the model (986 MB — one-time download)
-ollama pull qwen2.5:1.5b
-
-# Verify
-ollama list
-curl http://localhost:11434/api/tags
-```
-
----
-
 ## LLM Backend Priority
 
 | Condition | Backend Used |
 |---|---|
-| `ANTHROPIC_API_KEY` set in `secrets.env` | Claude Haiku (selector + schema + validation) |
-| Ollama running + `qwen2.5:1.5b` available | Ollama (selector + schema + validation + intent) |
-| Neither | Text-only mode (Trafilatura clean text, no structured extraction) |
+| LiteLLM proxy reachable (`LITELLM_BASE_URL`) | **mueen-80b** — intent + selector + schema + validation |
+| `ANTHROPIC_API_KEY` set, LiteLLM down | Claude Haiku — selector + schema + validation |
+| Ollama running, both above unavailable | qwen2.5:1.5b — all LLM tasks |
+| None available | Text-only mode (Trafilatura clean text, no structured extraction) |
 
-Intent parsing **always** uses Ollama (or heuristic fallback) — never Anthropic.
+---
+
+## LiteLLM Proxy Config (`secrets.env`)
+
+```
+LITELLM_BASE_URL=http://10.8.124.144:4000
+LITELLM_API_KEY=my-litellm-key-2026
+LITELLM_MODEL=mueen-80b
+```
+
+Test the raw API:
+```bash
+curl -s http://10.8.124.144:4000/v1/chat/completions \
+  -H "Authorization: Bearer my-litellm-key-2026" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"mueen-80b","messages":[{"role":"user","content":"say hi"}],"max_tokens":20}' \
+  | python3 -m json.tool
+```
 
 ---
 
@@ -322,8 +328,8 @@ Intent parsing **always** uses Ollama (or heuristic fallback) — never Anthropi
 
 | Package | Version | Purpose |
 |---|---|---|
-| anthropic | 0.99.0 | Claude Haiku API (optional — Ollama fallback available) |
-| httpx | 0.28.1 | Fast static scraping + Ollama HTTP client |
+| anthropic | 0.99.0 | Claude Haiku API (optional fallback) |
+| httpx | 0.28.1 | Fast static scraping + LiteLLM/Ollama HTTP client |
 | playwright | 1.59.0 | JS/dynamic page scraping |
 | trafilatura | 2.0.0 | Main content extraction |
 | beautifulsoup4 | 4.14.3 | HTML parsing + selector application |
