@@ -134,6 +134,20 @@ datapulse run --url https://example-spa.com/catalog \
   --output products.json
 ```
 
+### Client-side pagination (Algolia, React, Vue)
+
+For sites where page navigation happens in JavaScript (URL doesn't change), use `--paginate`:
+
+```bash
+# Get all exhibitors from MWC Barcelona (20 pages × 50 items)
+datapulse run --url https://www.mwcbarcelona.com/exhibitors/ \
+  --target "exhibitor name and URL" \
+  --paginate \
+  --output mwc_exhibitors.json
+```
+
+`--paginate` automatically clicks through "Next Page" buttons, dismisses cookie consent popups, and combines all pages into a single extraction pass. Configure `playwright.max_pages` in `datapulse.config.yaml` (default: 20).
+
 ### Debug mode
 
 ```bash
@@ -169,6 +183,7 @@ datapulse run --url https://example.com --target "..." --debug
 | `--max-urls` | 25 | URL cap per job |
 | `--depth` | from config | Crawl depth (0=seed only) |
 | `--playwright` | off | Force Playwright layer (required for SPAs) |
+| `--paginate` | off | Click through Next Page buttons (JS-paginated sites, implies Playwright) |
 | `--dry-run` | off | Show parsed intent, skip fetch |
 | `--debug` | off | Verbose logs + HTML snapshots to `output/debug/` |
 
@@ -301,6 +316,7 @@ datapulse/
 | 3.5 | ✅ Done | LiteLLM / OpenAI-compatible provider support, project-local storage |
 | 3.6 | ✅ Done | Recursive HTML chunker, html_cleaner crash fix, validation prompt fix |
 | 3.7 | ✅ Done | Generic LLM env vars, output/ folder, debug HTML, clean logs + UI |
+| 3.8 | ✅ Done | ASCII art banner, structured field extraction (name/url), `--paginate` for JS-paginated sites |
 | 4 | 🔜 Next | ScraperAPI/Zyte real integration, `resume` polish, error messages |
 | 5 | 🔜 | FastAPI REST server |
 

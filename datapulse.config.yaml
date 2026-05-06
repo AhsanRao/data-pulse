@@ -10,6 +10,7 @@ playwright:
   scroll_pause_ms: 1500    # longer pause so SPA can re-render after scroll
   headless: true
   max_scroll_attempts: 60  # enough for 600+ item catalogs
+  max_pages: 20            # max pagination clicks with --paginate
 
 llm:
   local_model: qwen2.5:1.5b

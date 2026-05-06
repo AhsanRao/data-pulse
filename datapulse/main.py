@@ -144,6 +144,8 @@ def run(
     depth: Optional[int] = typer.Option(None, "--depth", help="Crawl depth (0=seed only)"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Parse intent only, skip fetch"),
     force_playwright: bool = typer.Option(False, "--playwright", help="Force Playwright layer"),
+    paginate: bool = typer.Option(False, "--paginate",
+        help="Click through Next/pagination buttons (Playwright only, for client-side paginated sites)"),
     debug: bool = typer.Option(False, "--debug",
         help="Verbose logging + save raw/clean HTML snapshots to output/debug/"),
 ):
@@ -169,6 +171,7 @@ def run(
         depth_override=depth,
         dry_run=dry_run,
         force_playwright=force_playwright,
+        paginate=paginate,
         debug=debug,
     ))
 
@@ -183,6 +186,7 @@ async def _run_pipeline(
     depth_override: Optional[int],
     dry_run: bool,
     force_playwright: bool,
+    paginate: bool = False,
     debug: bool = False,
 ) -> None:
     from datapulse.config import cfg
@@ -233,7 +237,12 @@ async def _run_pipeline(
     job.status = "running"
     job.save()
 
-    layer_label = "[yellow]playwright[/]" if force_playwright else "[green]auto[/]"
+    if paginate:
+        layer_label = "[yellow]playwright[/] [dim]+paginate[/]"
+    elif force_playwright:
+        layer_label = "[yellow]playwright[/]"
+    else:
+        layer_label = "[green]auto[/]"
     target_label = f"[cyan]{intent.content_target}[/]" if intent.content_target else "[dim]full text[/]"
 
     console.print(
@@ -283,7 +292,7 @@ async def _run_pipeline(
                     progress.update(total_task,
                         description=f"[cyan]Fetching[/] [dim]{short_url}[/]")
 
-                    scrape_result = await scrape(url, force_playwright=force_playwright)
+                    scrape_result = await scrape(url, force_playwright=force_playwright or paginate, paginate=paginate)
 
                     if scrape_result.error or not scrape_result.html:
                         progress.print(

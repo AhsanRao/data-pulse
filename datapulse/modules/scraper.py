@@ -74,7 +74,103 @@ def _is_cloudflare_blocked(result: ScrapeResult) -> bool:
 
 # ── Layer 2: Playwright ───────────────────────────────────────────────────────
 
-async def _fetch_playwright(url: str, timeout: int) -> ScrapeResult:
+_NEXT_PAGE_SELECTORS = [
+    'a[aria-label="Next Page"]',
+    'a[aria-label="Next page"]',
+    'button[aria-label="Next Page"]',
+    'a[rel="next"]',
+    'a.next-page',
+    'button.next-page',
+    '.pagination a.next',
+    'a.ais-Pagination-item--nextPage',
+]
+
+
+_CONSENT_SELECTORS = [
+    "#onetrust-accept-btn-handler",
+    "button#onetrust-accept-btn-handler",
+    "[aria-label='Accept all cookies']",
+    "[aria-label='Accept All']",
+    "button.cookie-accept",
+    "button#accept-cookies",
+    "#CybotCookiebotDialogBodyButtonAccept",
+]
+
+
+async def _dismiss_consent(page) -> None:
+    """Best-effort: click any visible cookie consent accept button."""
+    for sel in _CONSENT_SELECTORS:
+        try:
+            btn = await page.query_selector(sel)
+            if btn and await btn.is_visible():
+                await btn.click(timeout=3000)
+                await asyncio.sleep(0.5)
+                logger.debug("Dismissed consent popup: %s", sel)
+                return
+        except Exception:
+            continue
+
+
+async def _paginate_playwright(page, first_html: str, pw_cfg: dict) -> str:
+    """Click through Next Page buttons and return combined HTML from all pages."""
+    max_pages = pw_cfg.get("max_pages", 10)
+    all_bodies: list[str] = [first_html]
+
+    # Dismiss any consent popup that might block clicks
+    await _dismiss_consent(page)
+
+    for page_num in range(1, max_pages):
+        next_btn = None
+        for sel in _NEXT_PAGE_SELECTORS:
+            try:
+                btn = await page.query_selector(sel)
+                if btn and await btn.is_visible():
+                    next_btn = btn
+                    break
+            except Exception:
+                continue
+
+        if not next_btn:
+            logger.debug("Pagination: no Next button found — done at page %d", page_num)
+            break
+
+        try:
+            await next_btn.click(timeout=5000)
+        except Exception:
+            # Popup may have come back — try dismissing again and retry once
+            await _dismiss_consent(page)
+            try:
+                await next_btn.click(timeout=5000)
+            except Exception:
+                logger.debug("Pagination: click failed on page %d — stopping", page_num)
+                break
+
+        try:
+            from playwright.async_api import TimeoutError as PWTimeout
+            await page.wait_for_load_state("networkidle", timeout=8000)
+        except Exception:
+            await asyncio.sleep(2.0)
+
+        all_bodies.append(await page.content())
+        logger.debug("Pagination: captured page %d", page_num + 1)
+
+    if len(all_bodies) == 1:
+        return all_bodies[0]
+
+    # Combine: extract <body> contents and wrap in a single document so
+    # the cleaner/chunker can process all pages as one HTML
+    from bs4 import BeautifulSoup
+
+    combined_parts: list[str] = []
+    for h in all_bodies:
+        soup = BeautifulSoup(h, "lxml")
+        body = soup.body
+        combined_parts.append(str(body) if body else h)
+
+    return "<html><body>" + "\n".join(combined_parts) + "</body></html>"
+
+
+async def _fetch_playwright(url: str, timeout: int, paginate: bool = False) -> ScrapeResult:
     try:
         from playwright.async_api import async_playwright, TimeoutError as PWTimeout
     except ImportError:
@@ -125,6 +221,8 @@ async def _fetch_playwright(url: str, timeout: int) -> ScrapeResult:
                 scroll_count += 1
 
             html = await page.content()
+            if paginate:
+                html = await _paginate_playwright(page, html, pw_cfg)
             return ScrapeResult(url=url, html=html, status_code=status, layer_used="playwright")
 
         except Exception as exc:
@@ -181,15 +279,16 @@ async def _fetch_zyte(url: str, timeout: int) -> ScrapeResult:
 
 # ── Public interface ──────────────────────────────────────────────────────────
 
-async def scrape(url: str, force_playwright: bool = False) -> ScrapeResult:
+async def scrape(url: str, force_playwright: bool = False, paginate: bool = False) -> ScrapeResult:
     """Fetch URL through the progressive fallback pipeline.
 
     Returns the first successful ScrapeResult.
+    paginate=True clicks through Next Page buttons (Playwright only).
     """
     timeout: int = cfg.scraping.get("timeout_seconds", 30)
 
-    # Layer 1 — fast path (skip if forced playwright)
-    if not force_playwright:
+    # Layer 1 — fast path (skip if forced playwright or paginating)
+    if not force_playwright and not paginate:
         logger.debug("Layer 1 (httpx): %s", url)
         result = await _fetch_httpx(url, timeout)
         if result.status_code == 200 and not _is_cloudflare_blocked(result):
@@ -198,7 +297,7 @@ async def scrape(url: str, force_playwright: bool = False) -> ScrapeResult:
 
     # Layer 2 — Playwright
     logger.debug("Layer 2 (Playwright): %s", url)
-    result = await _fetch_playwright(url, timeout)
+    result = await _fetch_playwright(url, timeout, paginate=paginate)
     if result.html and not _is_cloudflare_blocked(result) and not result.error:
         return result
     logger.debug("Playwright blocked or failed — trying anti-bot fallback")
