@@ -20,6 +20,8 @@ class Intent:
     content_target: str = ""
     max_urls: int = 25
     depth: int = 1
+    output_format: str | None = None   # detected from NL query, e.g. "json" / "csv"
+    output_file: str | None = None     # detected from NL query, e.g. "results.json"
 
 
 @dataclass

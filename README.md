@@ -67,7 +67,18 @@ Your query
 5. Formatter        — Outputs JSON / CSV / Markdown / plain text + metadata
 ```
 
-**LLM calls per job: 2–3 total.** Extraction itself runs programmatically (BeautifulSoup) — zero per-item LLM calls.
+**LLM calls per job: 2–3 total** for selector discovery + validation + schema inference. Extraction itself runs programmatically — zero per-item LLM calls.
+
+The job header shown at startup reflects everything the intent parser detected:
+
+```
+ Parsing intent…
+ Job     job_20260507_133234_62f2a6
+ URL     https://cyberab.org/Catalog#!/...
+ Target  exhibitors name and addresses
+ Layer   auto  ·  Format json  ·  Max URLs 25
+ Output  output/cyberab_org.json
+```
 
 ---
 
@@ -105,11 +116,16 @@ LLM_MODEL=<model-name>     # model to use
 
 ### Natural language queries
 
+The intent parser extracts URL, target, format, and output file directly from your sentence — no flags needed:
+
 ```bash
 datapulse run "get book title and price from https://books.toscrape.com"
 datapulse run "give me all the links on https://news.ycombinator.com"
-datapulse run "title and summary of each article on https://blog.example.com"
+datapulse run "get exhibitor names and addresses in json file from https://cyberab.org/..."
+datapulse run "save product names and prices as csv from https://books.toscrape.com"
 ```
+
+JS-heavy pages (Angular, React, hashbang `#!/` URLs) are detected automatically and upgraded to Playwright — no `--playwright` flag needed.
 
 ### Explicit flags (no NL parsing needed)
 

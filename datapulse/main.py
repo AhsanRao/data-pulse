@@ -226,6 +226,14 @@ async def _run_pipeline(
             intent.content_target = target_override
         raw_query = query or ""
 
+        # Apply output hints parsed by the intent layer (only when not set via CLI flags)
+        if output is None and intent.output_file:
+            if intent.output_format:
+                fmt = intent.output_format
+            output = _resolve_output(Path(intent.output_file))
+        elif intent.output_format and fmt == "json":
+            fmt = intent.output_format
+
     # ── Create job ────────────────────────────────────────────────────────────
     job = Job(
         query=raw_query,
@@ -244,6 +252,7 @@ async def _run_pipeline(
     else:
         layer_label = "[green]auto[/]"
     target_label = f"[cyan]{intent.content_target}[/]" if intent.content_target else "[dim]full text[/]"
+    output_label = f"[green]{output}[/]" if output else "[dim]stdout[/]"
 
     console.print(
         f" [bold]Job[/]     [dim]{job.job_id}[/]\n"
@@ -252,6 +261,7 @@ async def _run_pipeline(
         f" [bold]Layer[/]   {layer_label}  [dim]·[/]  "
         f"[bold]Format[/] [green]{fmt}[/]  [dim]·[/]  "
         f"[bold]Max URLs[/] {intent.max_urls}\n"
+        f" [bold]Output[/]  {output_label}\n"
     )
 
     if dry_run:

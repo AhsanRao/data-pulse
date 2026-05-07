@@ -89,8 +89,10 @@ datapulse/
 │
 ├── modules/
 │   ├── intent_parser.py     Module 1 — LiteLLM/Ollama NL → Intent + heuristic fallback
+│   │                        Extracts output_format + output_file from NL query via LLM prompt
 │   ├── scope_guard.py       Module 2 — URL dedup, domain filter, cap, deep queue
 │   ├── scraper.py           Module 3 — httpx / Playwright / ScraperAPI / Zyte
+│   │                        _is_js_required(): auto-upgrades httpx→Playwright for JS-required pages
 │   │                        _paginate_playwright(): click Next, dismiss consent, combine pages
 │   │                        _dismiss_consent(): handles OneTrust and common cookie popups
 │   ├── extractor.py         Module 4 — clean/chunk/LLM/validate/extract
@@ -218,6 +220,19 @@ output/debug/                Raw + clean HTML snapshots (--debug only, gitignore
 - [x] `main.py` — `_save_debug_html()` saves raw + clean snapshots to `output/debug/`
 - [x] `output/` and `.datapulse/` added to `.gitignore`
 - [x] `secrets.env` — updated to use generic `LLM_*` env vars with provider examples
+
+### ✅ Phase 3.9 — Intent-Driven Output + Auto Playwright (Complete)
+- [x] `intent_parser.py` — prompt updated to extract `output_format` and `output_file` from NL query
+- [x] `intent_parser.py` — `_validated_format()` and `_heuristic_output()` helpers for fallback path
+- [x] `job.py` — `Intent` gets `output_format` and `output_file` fields (both optional, backward-compat)
+- [x] `main.py` — applies `intent.output_file` / `intent.output_format` when no CLI flags override them
+- [x] `main.py` — job header now shows `Output` line (file path or `stdout`)
+- [x] `scraper.py` — `_is_js_required()` detects "JavaScript must be enabled" pages; auto-upgrades httpx→Playwright
+- [x] NL query form now works identically to explicit flags for JS-heavy sites
+
+**Verified:**
+- `datapulse run 'get me exhibitors name and addresses in json file from https://cyberab.org/...'`
+  → auto-detects Playwright (JS-required page), writes to `output/cyberab_org.json`
 
 ### ✅ Phase 3.8 — Structured Extraction + Pagination (Complete)
 - [x] `main.py` — ASCII art DataPulse banner (centered, Claude Code style)

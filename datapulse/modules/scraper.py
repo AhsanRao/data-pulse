@@ -306,13 +306,16 @@ async def scrape(url: str, force_playwright: bool = False, paginate: bool = Fals
     # Layer 1 — fast path (skip if forced playwright or paginating)
     if not force_playwright and not paginate:
         logger.debug("Layer 1 (httpx): %s", url)
-        result = await _fetch_httpx(url, timeout)
-        if result.status_code == 200 and not _is_cloudflare_blocked(result) and not _is_js_required(result):
-            return result
-        if _is_js_required(result):
-            logger.debug("httpx got JS-required page — upgrading to Playwright automatically")
-        else:
-            logger.debug("httpx returned %d or bot-blocked — trying Playwright", result.status_code)
+        try:
+            result = await _fetch_httpx(url, timeout)
+            if result.status_code == 200 and not _is_cloudflare_blocked(result) and not _is_js_required(result):
+                return result
+            if _is_js_required(result):
+                logger.debug("httpx got JS-required page — upgrading to Playwright automatically")
+            else:
+                logger.debug("httpx returned %d or bot-blocked — trying Playwright", result.status_code)
+        except Exception as exc:
+            logger.debug("httpx failed (%s) — falling through to Playwright", exc)
 
     # Layer 2 — Playwright
     logger.debug("Layer 2 (Playwright): %s", url)

@@ -34,6 +34,12 @@ Intent type rules:
 - "structured_data": user names specific fields to extract (price, title, rating, etc.)
 - "deep_content": user wants to follow links and scrape each linked page
 
+Output format rules:
+- Set "output_format" only if the user explicitly mentions a format (json, csv, markdown, text).
+- Set "output_file" if the user mentions saving to a file. Use the filename they gave, or auto-generate
+  one like "<domain>.<ext>" (e.g. "cyberab_org.json") if they just say "in a json file".
+- Both default to null if not mentioned.
+
 Query: "{query}"
 
 Respond ONLY with this JSON (no markdown, no explanation):
@@ -42,7 +48,9 @@ Respond ONLY with this JSON (no markdown, no explanation):
   "intent_type": "<url_list | page_content | structured_data | deep_content>",
   "content_target": "<what the user wants to extract, empty string if not specified>",
   "max_urls": <integer, default 25>,
-  "depth": <0 for single page, 1 for follow links once, 2 for deep_content>
+  "depth": <0 for single page, 1 for follow links once, 2 for deep_content>,
+  "output_format": "<json | csv | md | text | null>",
+  "output_file": "<filename or null>"
 }}"""
 
 # Keywords that hint at each intent type
@@ -120,6 +128,8 @@ def _parse_with_litellm(query: str) -> Intent:
         content_target=content_target,
         max_urls=int(data.get("max_urls") or cfg.scraping.get("max_urls", 25)),
         depth=depth,
+        output_format=_validated_format(data.get("output_format")),
+        output_file=data.get("output_file") or None,
     )
 
 
@@ -150,6 +160,8 @@ def _parse_with_ollama(query: str) -> Intent:
         content_target=content_target,
         max_urls=int(data.get("max_urls") or cfg.scraping.get("max_urls", 25)),
         depth=depth,
+        output_format=_validated_format(data.get("output_format")),
+        output_file=data.get("output_file") or None,
     )
 
 
@@ -180,8 +192,8 @@ def _parse_heuristic(query: str) -> Intent:
         intent_type = "page_content"
         depth = 0
 
-    # Extract content target: words between "get/extract/find" and the URL
     content_target = _extract_target_from_query(query, url)
+    out_fmt, out_file = _heuristic_output(query, url)
 
     return Intent(
         url=_normalise_url(url),
@@ -189,6 +201,8 @@ def _parse_heuristic(query: str) -> Intent:
         content_target=content_target,
         max_urls=cfg.scraping.get("max_urls", 25),
         depth=depth,
+        output_format=out_fmt,
+        output_file=out_file,
     )
 
 
@@ -230,3 +244,42 @@ def _extract_target_from_query(query: str, url: str) -> str:
     text = re.sub(filler, " ", text, flags=re.IGNORECASE)
     text = re.sub(r"\s{2,}", " ", text).strip(" ,.?!")
     return text
+
+
+def _validated_format(value: str | None) -> str | None:
+    valid = {"json", "csv", "md", "text"}
+    if not value:
+        return None
+    v = str(value).lower().strip()
+    return v if v in valid else None
+
+
+def _heuristic_output(query: str, url: str) -> tuple[str | None, str | None]:
+    """Detect output format and file from query text when no LLM is available."""
+    q = query.lower()
+
+    if "csv" in q:
+        fmt, ext = "csv", ".csv"
+    elif "markdown" in q or " md " in q:
+        fmt, ext = "md", ".md"
+    elif " text" in q or " txt" in q:
+        fmt, ext = "text", ".txt"
+    elif "json" in q:
+        fmt, ext = "json", ".json"
+    else:
+        fmt, ext = None, ".json"
+
+    # Explicit filename in query
+    m = re.search(r'\b([\w.-]+\.(json|csv|txt|md))\b', query, re.IGNORECASE)
+    if m:
+        return fmt, m.group(1)
+
+    file_phrases = [
+        "in json file", "in csv file", "in a file", "to a file", "to file",
+        "save to", "save as", "output to", "write to", "json file", "csv file",
+    ]
+    if any(p in q for p in file_phrases):
+        domain = urlparse(url).netloc.replace(".", "_") if url else "output"
+        return fmt, f"{domain}{ext}"
+
+    return fmt, None
