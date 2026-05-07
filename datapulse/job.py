@@ -22,6 +22,8 @@ class Intent:
     depth: int = 1
     output_format: str | None = None   # detected from NL query, e.g. "json" / "csv"
     output_file: str | None = None     # detected from NL query, e.g. "results.json"
+    paginate: bool = False             # detected from NL query: "paginate", "click through pages"
+    max_pages: int | None = None       # detected from NL query: "2 pages" → 2; None = use config default
 
 
 @dataclass

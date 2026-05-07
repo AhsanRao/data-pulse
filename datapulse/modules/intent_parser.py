@@ -40,6 +40,11 @@ Output format rules:
   one like "<domain>.<ext>" (e.g. "cyberab_org.json") if they just say "in a json file".
 - Both default to null if not mentioned.
 
+Pagination rules:
+- Set "paginate" to true if the user mentions paginating, clicking through pages, "all pages",
+  "multiple pages", "next page", or a specific page count like "2 pages" / "first 3 pages".
+- Set "max_pages" to the integer page count if the user specifies one (e.g. "2 pages" → 2), else null.
+
 Query: "{query}"
 
 Respond ONLY with this JSON (no markdown, no explanation):
@@ -50,7 +55,9 @@ Respond ONLY with this JSON (no markdown, no explanation):
   "max_urls": <integer, default 25>,
   "depth": <0 for single page, 1 for follow links once, 2 for deep_content>,
   "output_format": "<json | csv | md | text | null>",
-  "output_file": "<filename or null>"
+  "output_file": "<filename or null>",
+  "paginate": <true or false>,
+  "max_pages": <integer or null>
 }}"""
 
 # Keywords that hint at each intent type
@@ -130,6 +137,8 @@ def _parse_with_litellm(query: str) -> Intent:
         depth=depth,
         output_format=_validated_format(data.get("output_format")),
         output_file=data.get("output_file") or None,
+        paginate=bool(data.get("paginate", False)),
+        max_pages=int(data["max_pages"]) if data.get("max_pages") else None,
     )
 
 
@@ -162,6 +171,8 @@ def _parse_with_ollama(query: str) -> Intent:
         depth=depth,
         output_format=_validated_format(data.get("output_format")),
         output_file=data.get("output_file") or None,
+        paginate=bool(data.get("paginate", False)),
+        max_pages=int(data["max_pages"]) if data.get("max_pages") else None,
     )
 
 
@@ -194,6 +205,7 @@ def _parse_heuristic(query: str) -> Intent:
 
     content_target = _extract_target_from_query(query, url)
     out_fmt, out_file = _heuristic_output(query, url)
+    pag, max_pg = _heuristic_paginate(query)
 
     return Intent(
         url=_normalise_url(url),
@@ -203,6 +215,8 @@ def _parse_heuristic(query: str) -> Intent:
         depth=depth,
         output_format=out_fmt,
         output_file=out_file,
+        paginate=pag,
+        max_pages=max_pg,
     )
 
 
@@ -252,6 +266,23 @@ def _validated_format(value: str | None) -> str | None:
         return None
     v = str(value).lower().strip()
     return v if v in valid else None
+
+
+def _heuristic_paginate(query: str) -> tuple[bool, int | None]:
+    """Detect paginate=True and optional max_pages from query text."""
+    q = query.lower()
+    paginate_hints = [
+        "paginate", "paginated", "all pages", "multiple pages",
+        "next page", "click through", "page through",
+    ]
+    wants_paginate = any(h in q for h in paginate_hints)
+
+    # Detect "N pages" / "first N pages" / "paginate N pages"
+    m = re.search(r'\b(\d+)\s+pages?\b', q)
+    if m:
+        return True, int(m.group(1))
+
+    return wants_paginate, None
 
 
 def _heuristic_output(query: str, url: str) -> tuple[str | None, str | None]:

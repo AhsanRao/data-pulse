@@ -127,9 +127,9 @@ async def _dismiss_consent(page) -> None:
             continue
 
 
-async def _paginate_playwright(page, first_html: str, pw_cfg: dict) -> str:
+async def _paginate_playwright(page, first_html: str, pw_cfg: dict, max_pages: int | None = None) -> str:
     """Click through Next Page buttons and return combined HTML from all pages."""
-    max_pages = pw_cfg.get("max_pages", 10)
+    max_pages = max_pages or pw_cfg.get("max_pages", 20)
     all_bodies: list[str] = [first_html]
 
     # Dismiss any consent popup that might block clicks
@@ -186,7 +186,7 @@ async def _paginate_playwright(page, first_html: str, pw_cfg: dict) -> str:
     return "<html><body>" + "\n".join(combined_parts) + "</body></html>"
 
 
-async def _fetch_playwright(url: str, timeout: int, paginate: bool = False) -> ScrapeResult:
+async def _fetch_playwright(url: str, timeout: int, paginate: bool = False, max_pages: int | None = None) -> ScrapeResult:
     try:
         from playwright.async_api import async_playwright, TimeoutError as PWTimeout
     except ImportError:
@@ -238,7 +238,7 @@ async def _fetch_playwright(url: str, timeout: int, paginate: bool = False) -> S
 
             html = await page.content()
             if paginate:
-                html = await _paginate_playwright(page, html, pw_cfg)
+                html = await _paginate_playwright(page, html, pw_cfg, max_pages=max_pages)
             return ScrapeResult(url=url, html=html, status_code=status, layer_used="playwright")
 
         except Exception as exc:
@@ -295,7 +295,7 @@ async def _fetch_zyte(url: str, timeout: int) -> ScrapeResult:
 
 # ── Public interface ──────────────────────────────────────────────────────────
 
-async def scrape(url: str, force_playwright: bool = False, paginate: bool = False) -> ScrapeResult:
+async def scrape(url: str, force_playwright: bool = False, paginate: bool = False, max_pages: int | None = None) -> ScrapeResult:
     """Fetch URL through the progressive fallback pipeline.
 
     Returns the first successful ScrapeResult.
@@ -319,7 +319,7 @@ async def scrape(url: str, force_playwright: bool = False, paginate: bool = Fals
 
     # Layer 2 — Playwright
     logger.debug("Layer 2 (Playwright): %s", url)
-    result = await _fetch_playwright(url, timeout, paginate=paginate)
+    result = await _fetch_playwright(url, timeout, paginate=paginate, max_pages=max_pages)
     if result.html and not _is_cloudflare_blocked(result) and not result.error:
         return result
     logger.debug("Playwright blocked or failed — trying anti-bot fallback")

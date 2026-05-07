@@ -234,6 +234,10 @@ async def _run_pipeline(
         elif intent.output_format and fmt == "json":
             fmt = intent.output_format
 
+        # Apply pagination hints from intent (only when --paginate not already set)
+        if not paginate and intent.paginate:
+            paginate = True
+
     # ── Create job ────────────────────────────────────────────────────────────
     job = Job(
         query=raw_query,
@@ -245,22 +249,29 @@ async def _run_pipeline(
     job.status = "running"
     job.save()
 
+    effective_max_pages = intent.max_pages  # may be None (use config default)
     if paginate:
         layer_label = "[yellow]playwright[/] [dim]+paginate[/]"
     elif force_playwright:
         layer_label = "[yellow]playwright[/]"
     else:
         layer_label = "[green]auto[/]"
+
     target_label = f"[cyan]{intent.content_target}[/]" if intent.content_target else "[dim]full text[/]"
     output_label = f"[green]{output}[/]" if output else "[dim]stdout[/]"
+
+    layer_line = (
+        f"{layer_label}"
+        + (f"  [dim]·[/]  [bold]Max Pages[/] {effective_max_pages}" if paginate and effective_max_pages else "")
+        + f"  [dim]·[/]  [bold]Format[/] [green]{fmt}[/]"
+        + f"  [dim]·[/]  [bold]Max URLs[/] {intent.max_urls}"
+    )
 
     console.print(
         f" [bold]Job[/]     [dim]{job.job_id}[/]\n"
         f" [bold]URL[/]     {intent.url}\n"
         f" [bold]Target[/]  {target_label}\n"
-        f" [bold]Layer[/]   {layer_label}  [dim]·[/]  "
-        f"[bold]Format[/] [green]{fmt}[/]  [dim]·[/]  "
-        f"[bold]Max URLs[/] {intent.max_urls}\n"
+        f" [bold]Layer[/]   {layer_line}\n"
         f" [bold]Output[/]  {output_label}\n"
     )
 
@@ -302,7 +313,7 @@ async def _run_pipeline(
                     progress.update(total_task,
                         description=f"[cyan]Fetching[/] [dim]{short_url}[/]")
 
-                    scrape_result = await scrape(url, force_playwright=force_playwright or paginate, paginate=paginate)
+                    scrape_result = await scrape(url, force_playwright=force_playwright or paginate, paginate=paginate, max_pages=effective_max_pages)
 
                     if scrape_result.error or not scrape_result.html:
                         progress.print(
