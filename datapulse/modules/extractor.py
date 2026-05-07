@@ -94,9 +94,9 @@ def _llm_call(prompt: str, model: str | None = None, max_tokens: int = 512) -> s
     """Route LLM calls: LiteLLM proxy first, then Anthropic, then Ollama."""
     log_path = cfg.log_dir / "llm_calls.log"
 
-    from datapulse.utils import litellm_client
-    if litellm_client.is_available():
-        return litellm_client.call(prompt, model=model, max_tokens=max_tokens, log_path=log_path)
+    from datapulse.utils import llm_client
+    if llm_client.is_available():
+        return llm_client.call(prompt, model=model, max_tokens=max_tokens, log_path=log_path)
 
     if cfg.anthropic_api_key:
         return _call_anthropic(prompt, model, max_tokens, log_path)
@@ -108,7 +108,9 @@ def _llm_call(prompt: str, model: str | None = None, max_tokens: int = 512) -> s
 
     raise RuntimeError(
         "No LLM available. Either:\n"
-        "  1. Ensure the LiteLLM proxy is reachable (LITELLM_BASE_URL in secrets.env)\n"
+        "  1. Set LLM_BASE_URL + LLM_API_KEY + LLM_MODEL in secrets.env\n"
+        "     Google Gemini (free tier): LLM_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai\n"
+        "                                LLM_CHAT_PATH=/chat/completions  LLM_MODEL=gemini-2.0-flash\n"
         "  2. Add ANTHROPIC_API_KEY to secrets.env\n"
         "  3. Start Ollama: brew services start ollama && ollama pull qwen2.5:1.5b"
     )
@@ -254,8 +256,8 @@ def extract(
         )
 
     # Check at least one LLM backend is reachable
-    from datapulse.utils import litellm_client
-    has_litellm = litellm_client.is_available()
+    from datapulse.utils import llm_client
+    has_llm = llm_client.is_available()
     has_anthropic = bool(cfg.anthropic_api_key)
     try:
         from datapulse.utils.ollama_client import is_available
@@ -263,7 +265,7 @@ def extract(
     except Exception:
         has_ollama = False
 
-    if not has_litellm and not has_anthropic and not has_ollama:
+    if not has_llm and not has_anthropic and not has_ollama:
         logger.warning("No LLM available — returning cleaned text.")
         return ExtractionResult(
             items=[cleaned_text],

@@ -87,19 +87,22 @@ The job header shown at startup reflects everything the intent parser detected:
 DataPulse uses any **OpenAI-compatible** provider — set three env vars in `secrets.env`:
 
 ```bash
-LLM_BASE_URL=<endpoint>    # your provider's base URL
-LLM_API_KEY=<key>          # your API key
-LLM_MODEL=<model-name>     # model to use
+LLM_BASE_URL=<endpoint>          # your provider's base URL
+LLM_API_KEY=<key>                # your API key
+LLM_MODEL=<model-name>           # model to use
+LLM_CHAT_PATH=<completions-path> # optional — default /v1/chat/completions
+                                  # Google Gemini needs /chat/completions
 ```
 
 ### Provider examples
 
-| Provider | `LLM_BASE_URL` | `LLM_MODEL` example |
-|---|---|---|
-| **LiteLLM proxy** | `http://your-server:4000` | `mueen-80b` |
-| **OpenAI** | `https://api.openai.com/v1` | `gpt-4o-mini` |
-| **Anthropic** | `https://api.anthropic.com/v1` | `claude-haiku-4-5-20251001` |
-| **Ollama** (local) | auto-detected | `qwen2.5:1.5b` |
+| Provider | `LLM_BASE_URL` | `LLM_CHAT_PATH` | `LLM_MODEL` example |
+|---|---|---|---|
+| **Google Gemini** | `https://generativelanguage.googleapis.com/v1beta/openai` | `/chat/completions` | `gemini-2.0-flash` |
+| **OpenAI** | `https://api.openai.com` | `/v1/chat/completions` | `gpt-4o-mini` |
+| **Anthropic** | `https://api.anthropic.com/v1` | `/chat/completions` | `claude-haiku-4-5-20251001` |
+| **LiteLLM proxy** | `http://your-server:4000` | `/v1/chat/completions` | `your-model` |
+| **Ollama** (local) | auto-detected via Ollama client | — | `gemma3:4b` / `qwen2.5-coder:7b` |
 
 ### Auto-selection priority
 
@@ -250,9 +253,11 @@ output:
 API keys and LLM config go in `secrets.env` (never commit this file):
 
 ```bash
-LLM_BASE_URL=http://your-server:4000
-LLM_API_KEY=your-key
-LLM_MODEL=your-model
+# Google Gemini
+LLM_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai
+LLM_API_KEY=your-gemini-api-key
+LLM_MODEL=gemini-2.0-flash
+LLM_CHAT_PATH=/chat/completions
 
 ANTHROPIC_API_KEY=sk-ant-...    # optional direct SDK fallback
 SCRAPERAPI_KEY=                  # optional anti-bot proxy
@@ -328,7 +333,7 @@ datapulse/
 │   ├── extractor.py     Module 4 — clean + recursive chunk + LLM + BS4
 │   └── formatter.py     Module 5 — JSON / CSV / MD / text output
 └── utils/
-    ├── litellm_client.py OpenAI-compatible LLM client (primary backend)
+    ├── llm_client.py     OpenAI-compatible LLM client (primary backend)
     ├── ollama_client.py  Ollama HTTP wrapper (local fallback)
     ├── html_cleaner.py   BS4 + Trafilatura HTML cleaning
     ├── chunker.py        Recursive semantic block splitter
@@ -343,7 +348,7 @@ datapulse/
 | 1 | ✅ Done | Scraper pipeline, job persistence, CLI skeleton |
 | 2 | ✅ Done | LLM extraction (selector discovery + validation), all output formats |
 | 3 | ✅ Done | LLM intent parser, natural language queries |
-| 3.5 | ✅ Done | LiteLLM / OpenAI-compatible provider support, project-local storage |
+| 3.5 | ✅ Done | Generic LLM client (`llm_client.py`), OpenAI-compatible provider support, Google Gemini integration |
 | 3.6 | ✅ Done | Recursive HTML chunker, html_cleaner crash fix, validation prompt fix |
 | 3.7 | ✅ Done | Generic LLM env vars, output/ folder, debug HTML, clean logs + UI |
 | 3.8 | ✅ Done | ASCII art banner, structured field extraction (name/url), `--paginate` for JS-paginated sites |

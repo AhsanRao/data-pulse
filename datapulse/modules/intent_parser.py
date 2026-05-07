@@ -18,7 +18,7 @@ from urllib.parse import urlparse
 
 from datapulse.config import cfg
 from datapulse.job import Intent, IntentType
-from datapulse.utils import litellm_client
+from datapulse.utils import llm_client
 from datapulse.utils.ollama_client import generate as ollama_generate, parse_json_response, is_available as ollama_available
 
 logger = logging.getLogger(__name__)
@@ -74,13 +74,13 @@ _STRUCTURED_HINTS = ["price", "rating", "title", "name", "salary", "company",
 def parse_query(query: str) -> Intent:
     """Parse a natural language query into a structured Intent.
 
-    Tries LiteLLM proxy first, then Ollama, then falls back to heuristic parsing.
+    Tries the configured LLM first, then Ollama, then falls back to heuristic parsing.
     """
-    if litellm_client.is_available():
+    if llm_client.is_available():
         try:
-            return _parse_with_litellm(query)
+            return _parse_with_llm(query)
         except Exception as exc:
-            logger.warning("LiteLLM intent parsing failed (%s) — trying Ollama", exc)
+            logger.warning("LLM intent parsing failed (%s) — trying Ollama", exc)
 
     if ollama_available():
         try:
@@ -110,13 +110,13 @@ def parse_url_intent(
     )
 
 
-# ── LiteLLM parsing ───────────────────────────────────────────────────────────
+# ── LLM parsing ───────────────────────────────────────────────────────────────
 
-def _parse_with_litellm(query: str) -> Intent:
+def _parse_with_llm(query: str) -> Intent:
     log_path = cfg.log_dir / "llm_calls.log"
     prompt = _INTENT_PROMPT.format(query=query)
-    raw = litellm_client.call(prompt, max_tokens=256, temperature=0.0, log_path=log_path)
-    data = litellm_client.parse_json_response(raw)
+    raw = llm_client.call(prompt, max_tokens=256, temperature=0.0, log_path=log_path)
+    data = llm_client.parse_json_response(raw)
 
     url = data.get("url") or _extract_url(query)
     if not url:

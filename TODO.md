@@ -70,9 +70,9 @@ Natural language query  OR  --url flag
 ```
 
 **LLM backends (auto-selected in priority order):**
-1. **LiteLLM proxy → mueen-80b** — if `LLM_BASE_URL` + `LLM_API_KEY` set in `secrets.env` (primary)
-2. **Anthropic Claude Haiku** — if `ANTHROPIC_API_KEY` set and LiteLLM unreachable
-3. **Ollama qwen2.5:1.5b** — if Ollama running and both above unavailable
+1. **Any OpenAI-compatible provider** — if `LLM_BASE_URL` + `LLM_API_KEY` set in `secrets.env` (primary; currently Google Gemini)
+2. **Anthropic Claude Haiku** — if `ANTHROPIC_API_KEY` set and primary LLM not configured
+3. **Ollama (local)** — if Ollama running and both above unavailable
 4. **Text-only mode** — if no LLM is available (returns cleaned text, no structured data)
 
 ---
@@ -88,7 +88,7 @@ datapulse/
 │                            LLM_* env vars (primary), LITELLM_* (backward compat fallback)
 │
 ├── modules/
-│   ├── intent_parser.py     Module 1 — LiteLLM/Ollama NL → Intent + heuristic fallback
+│   ├── intent_parser.py     Module 1 — LLM/Ollama NL → Intent + heuristic fallback
 │   │                        Extracts output_format + output_file from NL query via LLM prompt
 │   ├── scope_guard.py       Module 2 — URL dedup, domain filter, cap, deep queue
 │   ├── scraper.py           Module 3 — httpx / Playwright / ScraperAPI / Zyte
@@ -101,7 +101,7 @@ datapulse/
 │                            _normalise_items(): key-value prefix parsing (name:/url: lines)
 │
 └── utils/
-    ├── litellm_client.py    OpenAI-compatible LLM client — call(), is_available()
+    ├── llm_client.py        OpenAI-compatible LLM client — call(), is_available(), LLM_CHAT_PATH support
     ├── ollama_client.py     Ollama HTTP wrapper (fallback) — generate(), is_available()
     ├── html_cleaner.py      BS4 HTML cleaning — strips scripts/nav/ads/onetrust
     │                        Two-phase decompose to avoid NoneType crash on orphaned children
@@ -112,7 +112,7 @@ datapulse/
 
 tests/
 ├── test_scraper.py          Phase 1: scraper, links, cleaner, chunker, job, retry
-├── test_intent_parser.py    Phase 1+3: stub + LiteLLM path + heuristic
+├── test_intent_parser.py    Phase 1+3: stub + LLM path + heuristic
 ├── test_extractor.py        Phase 2: selector discovery, validation, pipeline (mocked)
 └── test_formatter.py        Phase 2: JSON/CSV/MD/text output
 
@@ -138,6 +138,8 @@ output/debug/                Raw + clean HTML snapshots (--debug only, gitignore
 3. **LLM env vars use `LLM_*` prefix (not `LITELLM_*`).**
    `config.py` reads `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL` first, then falls back
    to `LITELLM_BASE_URL` etc. for backward compat. `secrets.env` uses `LLM_*`.
+   `LLM_CHAT_PATH` overrides the completions endpoint path — needed for Google Gemini
+   (`/chat/completions`) vs standard providers (`/v1/chat/completions`, the default).
 
 4. **Chunker has NO fixed depth limit.**
    Old `_MAX_RECURSE_DEPTH=15` was removed. SPAs nest up to 22+ levels deep
@@ -201,11 +203,14 @@ output/debug/                Raw + clean HTML snapshots (--debug only, gitignore
 - [x] `scope_guard.py` — depth-aware URL queue + `enqueue_discovered_links()`
 - [x] `main.py` — full NL query path + concurrent deep crawl loop
 
-### ✅ Phase 3.5 — LiteLLM Proxy Integration (Complete)
-- [x] `utils/litellm_client.py` — OpenAI-compatible `httpx` wrapper
-- [x] `config.py` — `LLM_*` env var properties (primary) + `LITELLM_*` fallback
-- [x] `extractor.py` — LiteLLM first in `_llm_call()` routing
-- [x] `secrets.env` — `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`
+### ✅ Phase 3.5 — Generic LLM Client + Google Gemini (Complete)
+- [x] `utils/llm_client.py` — OpenAI-compatible `httpx` wrapper (renamed from `litellm_client.py`)
+- [x] `config.py` — `LLM_*` env var properties (primary) + `LITELLM_*` fallback; removed deprecated `litellm_*` aliases
+- [x] `extractor.py` — `llm_client` first in `_llm_call()` routing; `has_llm` flag
+- [x] `intent_parser.py` — `_parse_with_llm()` (renamed from `_parse_with_litellm()`)
+- [x] `secrets.env` — switched to Google Gemini free tier (`gemini-3.1-flash-lite`), added `LLM_CHAT_PATH`
+- [x] `llm_client.py` — `LLM_CHAT_PATH` env var for provider-specific completions path
+- [x] `llm_client.py` — `is_available()` checks config vars only (no HTTP ping — works for cloud APIs)
 
 ### ✅ Phase 3.6 — Chunker + Cleaner Fixes (Complete)
 - [x] `html_cleaner.py` — two-phase decompose to fix NoneType crash on orphaned BS4 children
@@ -276,7 +281,7 @@ output/debug/                Raw + clean HTML snapshots (--debug only, gitignore
 - [ ] **Actionable error messages** for common failures:
   - 403/429: "Try `--playwright` or add SCRAPERAPI_KEY to secrets.env"
   - No items extracted: "Try a more specific `--target` description"
-  - LiteLLM unreachable: "Check LLM_BASE_URL and that the proxy is running"
+  - LLM unreachable: "Check LLM_BASE_URL / LLM_API_KEY in secrets.env"
   - Ollama 404 (model missing): "Run: ollama pull qwen2.5:1.5b"
 
 - [ ] **Deduplication in `--paginate` mode** — featured items repeat on every page
@@ -313,8 +318,8 @@ source .env/bin/activate
 # Run tests
 .env/bin/pytest tests/ -v
 
-# Verify LiteLLM proxy is up
-python -c "from datapulse.utils import litellm_client; print(litellm_client.is_available())"
+# Verify LLM is configured
+.env/bin/python -c "from datapulse.utils import llm_client; print(llm_client.is_available())"
 
 # ── Natural language query ──
 datapulse run "get book titles and prices from https://books.toscrape.com"
@@ -366,9 +371,9 @@ datapulse resume job_20260506_143201_abc123
 
 | Condition | Backend Used |
 |---|---|
-| `LLM_BASE_URL` + `LLM_API_KEY` set in `secrets.env` | **mueen-80b via LiteLLM** — all LLM tasks |
-| `ANTHROPIC_API_KEY` set, LiteLLM unreachable | Claude Haiku — selector + schema + validation |
-| Ollama running, both above unavailable | qwen2.5:1.5b — all LLM tasks |
+| `LLM_BASE_URL` + `LLM_API_KEY` set in `secrets.env` | **Configured provider** (currently Gemini `gemini-3.1-flash-lite`) |
+| `ANTHROPIC_API_KEY` set, primary LLM not configured | Claude Haiku — selector + schema + validation |
+| Ollama running, both above unavailable | Local model (e.g. `gemma3:4b`, `qwen2.5-coder:7b`) |
 | None available | Text-only mode — cleaned text, no structured extraction |
 
 ---
@@ -380,6 +385,7 @@ datapulse resume job_20260506_143201_abc123
 LLM_BASE_URL=http://10.8.124.144:4000
 LLM_API_KEY=sk-my-litellm-key-2026
 LLM_MODEL=mueen-80b
+LLM_CHAT_PATH=v1/chat/completions
 
 ANTHROPIC_API_KEY=          # optional direct Anthropic fallback
 SCRAPERAPI_KEY=             # optional anti-bot proxy

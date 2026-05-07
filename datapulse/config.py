@@ -121,19 +121,6 @@ class Config:
     def llm_model(self) -> str | None:
         return os.getenv("LLM_MODEL") or os.getenv("LITELLM_MODEL")
 
-    # Kept for backward compat — prefer llm_* above
-    @property
-    def litellm_api_key(self) -> str | None:
-        return self.llm_api_key
-
-    @property
-    def litellm_base_url(self) -> str | None:
-        return self.llm_base_url
-
-    @property
-    def litellm_model(self) -> str | None:
-        return self.llm_model
-
     @property
     def scraperapi_key(self) -> str | None:
         return os.getenv("SCRAPERAPI_KEY")
