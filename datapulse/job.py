@@ -81,6 +81,8 @@ class Job:
                     "created_at": data["created_at"],
                     "urls_processed": len(data.get("urls_processed", [])),
                     "urls_pending": len(data.get("urls_pending", [])),
+                    "output_path": data.get("output_path"),
+                    "output_format": data.get("output_format", "json"),
                 })
             except Exception:
                 continue

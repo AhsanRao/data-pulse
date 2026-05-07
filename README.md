@@ -59,15 +59,24 @@ Your query
                       Layer 3: ScraperAPI / Zyte (bot-protected sites)
     │
     ▼
-4. Extractor        — Cleans HTML (strips nav/scripts/ads) → recursive chunker →
-                      LLM finds CSS selector → validation gate →
-                      BeautifulSoup extracts all items
+4. Extractor        — Two modes depending on page type:
+                      ┌─ Listing pages (--target) ──────────────────────────┐
+                      │  Clean HTML → recursive chunker → LLM finds CSS     │
+                      │  selector → validation gate → BeautifulSoup extracts │
+                      └─────────────────────────────────────────────────────┘
+                      ┌─ Detail pages (--follow) ───────────────────────────┐
+                      │  Extract <aside>/contact section → single LLM call  │
+                      │  parses fields directly as JSON (no selector needed) │
+                      └─────────────────────────────────────────────────────┘
     │
     ▼
 5. Formatter        — Outputs JSON / CSV / Markdown / plain text + metadata
 ```
 
-**LLM calls per job: 2–3 total** for selector discovery + validation + schema inference. Extraction itself runs programmatically — zero per-item LLM calls.
+**LLM calls per job:**
+- Listing crawl: ~3 calls (selector discovery + validation + schema inference)
+- Each detail page (`--follow`): 1 call (direct text→JSON extraction from contact section)
+- Schema is accumulated as a union across all detail pages — fields found on any page become CSV columns
 
 The job header shown at startup reflects everything the intent parser detected:
 
@@ -176,6 +185,34 @@ Both `--paginate` and `--max-pages` are also detected from natural language:
 datapulse run "get exhibitor names and urls from https://www.mwcbarcelona.com/exhibitors/ paginate 2 pages in csv file"
 ```
 
+### Follow links — detail page extraction
+
+After collecting a list of items with URLs (e.g. exhibitor directory), use `--follow` to automatically visit each extracted URL and scrape detail info:
+
+```bash
+# Get exhibitor list, then visit each page and extract website, LinkedIn, Twitter, address
+datapulse run "get me exhibitors name and url from https://www.mwcbarcelona.com/exhibitors/ in csv file paginate 2 pages" \
+  --follow \
+  --detail-target "social media links, email, and address" \
+  --max-follow 100
+```
+
+**How detail page extraction works:**
+1. Listing crawl runs first (CSS selector approach, as usual) — collects exhibitor names + URLs
+2. For each detail URL, the scraper fetches the page (Playwright if needed)
+3. The extractor uses **direct text extraction** — no CSS selector discovery:
+   - Pulls just the `<aside>` / contact section from the HTML (avoids nav/footer noise)
+   - One LLM call: parse the focused text into structured JSON fields
+4. Schema is a **union** across all detail pages — fields found on any single page (e.g. LinkedIn on page 5) become a column in the final CSV/JSON for all rows
+5. Listing fields + detail fields are merged by URL match into the final output
+
+**Result (CSV example):**
+```
+name,url,website,stand,linkedin,twitter,facebook
+Ericsson,https://...,https://www.ericsson.com,Hall 2 Stand 2O60,https://linkedin.com/company/Ericsson,https://x.com/ericsson,
+GSMA,https://...,https://www.gsma.com,Hall 4 Stand 4F30,https://www.linkedin.com/company/gsma/,https://x.com/gsma,https://www.facebook.com/gsma/
+```
+
 ### Debug mode
 
 ```bash
@@ -212,7 +249,10 @@ datapulse run --url https://example.com --target "..." --debug
 | `--depth` | from config | Crawl depth (0=seed only) |
 | `--playwright` | off | Force Playwright layer (required for SPAs) |
 | `--paginate` | off | Click through Next Page buttons (JS-paginated sites, implies Playwright) |
-| `--max-pages` | config | Max pages to click through (overrides `playwright.max_pages` for this job) |
+| `--max-pages` | config | Max pages to click through with `--paginate` (overrides `playwright.max_pages`) |
+| `--follow` | off | Visit each extracted URL and scrape detail pages |
+| `--detail-target` | — | What to extract from detail pages, e.g. `"email and social media"` |
+| `--max-follow` | 50 | Max detail URLs to follow |
 | `--dry-run` | off | Show parsed intent, skip fetch |
 | `--debug` | off | Verbose logs + HTML snapshots to `output/debug/` |
 

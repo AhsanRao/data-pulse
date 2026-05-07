@@ -100,7 +100,7 @@ def _to_text(result: ExtractionResult, url: str, include_metadata: bool) -> str:
             "",
         ]
 
-    if result.method == "llm_selector":
+    if result.method in ("llm_selector", "llm_text"):
         for i, item in enumerate(result.items, 1):
             lines.append(f"{i}. {item}")
     else:
@@ -150,6 +150,22 @@ def _normalise_items(items: list[Any], fields: list[str]) -> list[dict]:
 
         normalised.append(row)
     return normalised
+
+
+def deduplicate_items(items: list) -> tuple[list, int]:
+    """Deduplicate extracted items by URL (if present) or full content.
+
+    Returns (deduped_list, removed_count).
+    """
+    seen: set[str] = set()
+    result: list = []
+    for item in items:
+        m = re.search(r'url:\s*(\S+)', str(item), re.IGNORECASE)
+        key = m.group(1).rstrip('/') if m else str(item).strip()
+        if key not in seen:
+            seen.add(key)
+            result.append(item)
+    return result, len(items) - len(result)
 
 
 def _metadata(result: ExtractionResult, url: str) -> dict:

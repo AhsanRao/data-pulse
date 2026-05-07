@@ -76,6 +76,23 @@ Answer with valid JSON only:
   "reason": "<one sentence — if false, say which fields are present and which are missing>"
 }}"""
 
+_VALIDATION_PROMPT_LENIENT = """\
+You extracted these {count} text samples using the CSS selector `{selector}`.
+The user wants to find: "{content_target}"
+
+Samples:
+{samples}
+
+Answer true if the samples show AT LEAST ONE of the requested fields — partial matches are fine.
+Different pages may have different subsets of the requested fields; that is expected.
+Answer false ONLY if the samples contain no relevant data at all (navigation, banners, empty elements).
+
+Answer with valid JSON only:
+{{
+  "valid": true or false,
+  "reason": "<one sentence>"
+}}"""
+
 _SCHEMA_PROMPT = """\
 The user wants to extract: "{content_target}"
 Here are up to 10 sample extracted texts:
@@ -86,6 +103,16 @@ Infer a flat JSON schema for each item. Respond ONLY with valid JSON like:
   "fields": ["field1", "field2"],
   "reasoning": "<one sentence>"
 }}"""
+
+_TEXT_EXTRACT_PROMPT = """\
+Extract the following information from this page: {content_target}
+
+Page content:
+{text}
+
+Return ONLY valid JSON with the extracted fields as a flat object. Use null for any field not found.
+Include ALL social media links found (linkedin, twitter/x, facebook, instagram, youtube, etc.) as separate fields.
+Example: {{"website": "https://example.com", "email": "info@example.com", "linkedin": "https://linkedin.com/...", "twitter": "https://twitter.com/...", "address": "123 Main St", "stand": "Hall 4 B10"}}"""
 
 
 # ── LLM backend selection ─────────────────────────────────────────────────────
@@ -187,6 +214,7 @@ def _validate_selector(
     selector: str,
     content_target: str,
     k: int = 5,
+    strict: bool = True,
 ) -> tuple[bool, str]:
     """Apply selector, pull k samples, ask LLM if they match the target."""
     elements = apply_selector(html, selector)
@@ -196,7 +224,8 @@ def _validate_selector(
     samples = sample_elements(elements, k=k)
     formatted = "\n".join(f"  {i+1}. {s[:200]}" for i, s in enumerate(samples))
 
-    prompt = _VALIDATION_PROMPT.format(
+    prompt_template = _VALIDATION_PROMPT if strict else _VALIDATION_PROMPT_LENIENT
+    prompt = prompt_template.format(
         count=len(samples),
         selector=selector,
         content_target=content_target,
@@ -224,6 +253,70 @@ def _infer_schema(elements: list[str], content_target: str) -> list[str]:
     return ["value"]
 
 
+def _focused_text_for_extraction(structural_html: str, cleaned_text: str) -> str:
+    """Return the most relevant text snippet for contact/detail field extraction.
+
+    Priority: aside/contact section HTML → cleaned_text fallback.
+    Avoids sending the full page (which leads to LLM picking up nav/footer URLs).
+    """
+    try:
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(structural_html, "lxml")
+
+        # Prefer the first <aside> that isn't a newsletter/footer aside
+        for aside in soup.find_all("aside"):
+            cls = " ".join(aside.get("class") or []).lower()
+            if "newsletter" in cls or "bg-dark" in cls:
+                continue
+            text = aside.get_text(separator="\n", strip=True)
+            if text:
+                # Also include any href links as explicit lines
+                links = [a.get("href") for a in aside.find_all("a", href=True)]
+                links_text = "\n".join(f"link: {h}" for h in links if h.startswith("http"))
+                return (links_text + "\n" + text)[:4000]
+
+        # Fallback: sections with id/class hinting at contact info
+        for tag in soup.find_all(True):
+            tag_id = (tag.get("id") or "").lower()
+            if any(k in tag_id for k in ("social", "contact", "links", "location")):
+                text = tag.get_text(separator="\n", strip=True)
+                if text:
+                    return text[:4000]
+
+    except Exception as exc:
+        logger.debug("Focused text extraction failed: %s", exc)
+
+    return cleaned_text[:4000]
+
+
+def _extract_from_text(structural_html: str, content_target: str, cleaned_text: str) -> ExtractionResult | None:
+    """Ask the LLM to extract fields directly from focused page text (fallback for detail pages)."""
+    focused = _focused_text_for_extraction(structural_html, cleaned_text)
+    prompt = _TEXT_EXTRACT_PROMPT.format(
+        content_target=content_target,
+        text=focused,
+    )
+    try:
+        raw = _llm_call(prompt, max_tokens=512)
+        data = _parse_json_response(raw)
+        # Drop null/empty values
+        data = {k: v for k, v in data.items() if v}
+        if not data:
+            return None
+        fields = list(data.keys())
+        item_text = "\n".join(f"{k}: {v}" for k, v in data.items())
+        return ExtractionResult(
+            items=[item_text],
+            selector_used=None,
+            schema_fields=fields,
+            cleaned_text=cleaned_text,
+            method="llm_text",
+        )
+    except Exception as exc:
+        logger.debug("Text extraction fallback failed: %s", exc)
+        return None
+
+
 # ── Full extraction pipeline ──────────────────────────────────────────────────
 
 @dataclass
@@ -240,8 +333,15 @@ def extract(
     url: str = "",
     content_target: str = "",
     selector_hint: str | None = None,
+    strict_validation: bool = True,
+    skip_selector: bool = False,
 ) -> ExtractionResult:
-    """Run the full extraction pipeline for a single page."""
+    """Run the full extraction pipeline for a single page.
+
+    skip_selector=True bypasses CSS selector discovery and goes directly to
+    text-based LLM extraction — use for detail/profile pages where the data
+    is non-repeating (contact info, social links, etc.).
+    """
     cleaned_text = clean_html(html, url=url)
 
     if not content_target:
@@ -274,6 +374,19 @@ def extract(
         )
 
     structural_html = clean_html_keep_tags(html)
+
+    if skip_selector:
+        text_result = _extract_from_text(structural_html, content_target, cleaned_text)
+        if text_result:
+            return text_result
+        return ExtractionResult(
+            items=[cleaned_text],
+            selector_used=None,
+            schema_fields=["content"],
+            cleaned_text=cleaned_text,
+            method="text_only",
+        )
+
     chunks = chunk_html(structural_html)
 
     # Try cached selector first
@@ -297,7 +410,7 @@ def extract(
             continue
 
         try:
-            valid, reason = _validate_selector(structural_html, sel_result.selector, content_target)
+            valid, reason = _validate_selector(structural_html, sel_result.selector, content_target, strict=strict_validation)
         except Exception as exc:
             valid, reason = False, str(exc)
 
@@ -309,7 +422,13 @@ def extract(
 
         logger.debug("Selector '%s' failed validation — retrying", sel_result.selector)
 
-    logger.warning("All %d chunks tried, no valid selector found — returning cleaned text.", min(max_attempts, len(chunks)))
+    logger.warning("All %d chunks tried, no valid selector found — trying text extraction.", min(max_attempts, len(chunks)))
+    if content_target:
+        text_result = _extract_from_text(structural_html, content_target, cleaned_text)
+        if text_result:
+            logger.debug("Text extraction succeeded: %d items", len(text_result.items))
+            return text_result
+
     return ExtractionResult(
         items=[cleaned_text],
         selector_used=None,

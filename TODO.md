@@ -55,11 +55,18 @@ Natural language query  OR  --url flag
           │  raw HTML string
    ┌──────▼────────────────┐
    │ 4. Extractor            │  datapulse/modules/extractor.py
-   │    ✅ Done              │  BS4 clean → recursive semantic chunks
-   │                         │  → LLM selector discovery (all chunks tried)
-   │                         │  → Validation gate (5-sample LLM verify)
-   │                         │  → BeautifulSoup programmatic extraction
-   │                         │  → LLM schema inference (field names)
+   │    ✅ Done              │  Two modes:
+   │                         │  ┌─ Listing (skip_selector=False) ─────────────┐
+   │                         │  │ BS4 clean → recursive semantic chunks        │
+   │                         │  │ → LLM selector discovery → validation gate  │
+   │                         │  │ → BeautifulSoup programmatic extraction      │
+   │                         │  │ → LLM schema inference (field names)         │
+   │                         │  └──────────────────────────────────────────────┘
+   │                         │  ┌─ Detail (skip_selector=True) ───────────────┐
+   │                         │  │ Extract <aside>/contact section from HTML    │
+   │                         │  │ → single LLM call → structured JSON fields  │
+   │                         │  │ method="llm_text"                            │
+   │                         │  └──────────────────────────────────────────────┘
    └──────┬────────────────┘
           │  ExtractionResult { items[], selector_used, schema_fields, method }
    ┌──────▼────────────────┐
@@ -96,9 +103,14 @@ datapulse/
 │   │                        _paginate_playwright(): click Next, dismiss consent, combine pages
 │   │                        _dismiss_consent(): handles OneTrust and common cookie popups
 │   ├── extractor.py         Module 4 — clean/chunk/LLM/validate/extract
-│   │                        Tries up to max_chunk_attempts (default 50) chunks; exits early on first valid selector
+│   │                        Listing mode: up to max_chunk_attempts (default 50) chunks, exits early on first valid selector
+│   │                        Detail mode: skip_selector=True → _focused_text_for_extraction() → single LLM text→JSON call
+│   │                        _focused_text_for_extraction(): pulls <aside>/contact section HTML, prepends href links
+│   │                        _extract_from_text(): sends focused text to LLM, parses JSON, returns ExtractionResult(method="llm_text")
 │   └── formatter.py         Module 5 — JSON/CSV/MD/text renderer + metadata
 │                            _normalise_items(): key-value prefix parsing (name:/url: lines)
+│                            deduplicate_items(): dedup by URL or content, returns (list, removed_count)
+│                            llm_text method treated same as llm_selector in _to_text()
 │
 └── utils/
     ├── litellm_client.py    OpenAI-compatible LLM client — call(), is_available()
@@ -114,7 +126,8 @@ tests/
 ├── test_scraper.py          Phase 1: scraper, links, cleaner, chunker, job, retry
 ├── test_intent_parser.py    Phase 1+3: stub + LiteLLM path + heuristic
 ├── test_extractor.py        Phase 2: selector discovery, validation, pipeline (mocked)
-└── test_formatter.py        Phase 2: JSON/CSV/MD/text output
+├── test_formatter.py        Phase 2: JSON/CSV/MD/text output
+└── test_integration.py      Phase 4: full pipeline integration tests (12 tests)
 
 datapulse.config.yaml        User config (all settings + defaults, incl. playwright.max_pages)
 secrets.env                  API keys (gitignored)
@@ -173,6 +186,18 @@ output/debug/                Raw + clean HTML snapshots (--debug only, gitignore
 
 11. **Playwright scroll** stops when `document.body.scrollHeight` stops growing for 3
     consecutive checks. Cap: `playwright.max_scroll_attempts` (default 60).
+
+12. **Detail pages use direct text extraction, not CSS selectors.**
+    Contact info / social media links are non-repeating fields scattered across a page —
+    CSS selector discovery (designed for lists of repeated items) always fails on them.
+    `extract(skip_selector=True)` skips selector discovery entirely: it extracts the
+    `<aside>` or contact section HTML and makes one LLM call to parse it as JSON.
+    Cost: 1 LLM call per detail page. Old cost: 7–18 failed attempts + 1 text call.
+
+13. **Detail schema is a union, not a per-page overwrite.**
+    Detail pages run concurrently — the last one to finish would overwrite `detail_schema`
+    with its own (possibly smaller) field set. Now `detail_schema` accumulates all unique
+    field names seen across all pages, so LinkedIn found on page 5 still becomes a CSV column.
 
 ---
 
@@ -257,38 +282,86 @@ output/debug/                Raw + clean HTML snapshots (--debug only, gitignore
 
 ---
 
-## 🔜 Phase 4 — Anti-bot + Resume + Polish
+## ✅ Phase 4 — Polish + Follow + Integration Tests (Complete)
 
-### Tasks
+- [x] **Actionable error messages** — `_scrape_error_hint()` in `main.py`
+  - 403/429/503: "try --playwright" or "add SCRAPERAPI_KEY"
+  - SSL/certificate errors: note that Playwright auto-resolves
+  - Timeout: suggest increasing `timeout_seconds` in config
+  - text_only with content_target: "try a more specific --target or --debug"
+  - No items at all: global tip printed after output
+- [x] **Deduplication in `--paginate` mode** — `deduplicate_items()` in `formatter.py`
+  - Deduplicates by `url:` value if present, otherwise by full content
+  - Returns `(deduped_list, removed_count)`; count shown in console
+- [x] **`--follow` + `--detail-target` + `--max-follow`** — deep detail crawl
+  - After listing crawl, `_extract_follow_urls()` parses `url:` lines from extracted items
+  - `_merge_with_details()` concatenates listing + detail text by URL match, joining ALL detail items (not just first)
+  - Combined schema = listing fields + union of all detail page fields
+- [x] **Lenient validation** — `strict=False` param on `_validate_selector()` + `extract()`
+  - `_VALIDATION_PROMPT_LENIENT`: accepts partial field matches
+  - Strict mode still used for listing crawls
+- [x] **Integration tests** — `tests/test_integration.py` (12 tests, all passing)
+  - UC-01: link extraction from mock HTML
+  - UC-02: structured data extraction with mocked LLM
+  - UC-03: deduplication by URL and by content
+  - UC-04: JS-required auto-upgrade httpx→Playwright
+  - UC-05: follow URL extraction and result merging
+  - UC-06: strict vs lenient validation
+- [x] **`datapulse jobs` polish** — Output column shows file path or `stdout (format)`
+- [x] **`job.py` `list_all()`** — returns `output_path` and `output_format` fields
 
-- [ ] **ScraperAPI integration** — Layer 3 exists but minimal
+**Total tests: 66 passing (54 existing + 12 new integration tests)**
+
+---
+
+## ✅ Phase 4.1 — Detail Page Extraction Overhaul (Complete)
+
+- [x] **`skip_selector=True` on `extract()`** — bypasses CSS selector discovery for detail/profile pages
+  - Detail pages have non-repeating contact data (website, email, social links) — selector approach always failed
+  - Previously: 7–18 LLM calls per page wasted on selector discovery before falling through to text
+  - Now: 1 LLM call per detail page (focused text → JSON extraction)
+- [x] **`_focused_text_for_extraction()`** — pulls only the relevant section before sending to LLM
+  - Finds the first `<aside>` that isn't a newsletter/footer aside
+  - Prepends all `<a href>` links found in that section as `link: <url>` lines
+  - Falls back to contact-section div (id containing "social"/"contact"/"links") then Trafilatura text
+  - Avoids sending full page HTML (which causes LLM to pick up nav/footer URLs as the exhibitor's site)
+- [x] **`_extract_from_text()`** — single LLM call for contact field extraction
+  - Sends focused text with `_TEXT_EXTRACT_PROMPT`: extract specified fields, return flat JSON, null for missing
+  - Returns `ExtractionResult(method="llm_text")` — handled correctly by formatter and progress display
+- [x] **Schema union across detail pages** — replaces overwrite with accumulation
+  - `detail_schema` now accumulates all unique fields seen across all concurrent detail page fetches
+  - LinkedIn found on page 5 still becomes a column in the final CSV for all rows
+- [x] **`aside` no longer stripped in `html_cleaner.py`**
+  - Removed `"aside"` from `_STRIP_TAGS` — contact/social info on many sites lives in `<aside>` elements
+  - Boilerplate sidebars are handled by the `_STRIP_ID_PATTERNS` pattern matching instead
+- [x] **Debug HTML saved for detail pages** — `--debug` now captures follow phase HTML snapshots
+- [x] **`method="llm_text"` displayed as `[cyan]text-llm[/]`** in follow phase progress output
+
+**Verified on MWC Barcelona:**
+```
+datapulse run "get me exhibitors name and url from https://www.mwcbarcelona.com/exhibitors/ in csv file paginate 2 pages" \
+  --follow --detail-target "social media links, email, and address" --max-follow 100
+```
+Output CSV: `name, url, website, stand, linkedin, twitter, facebook` — correct per-exhibitor values.
+
+---
+
+## 🔜 Phase 4.5 — External Anti-bot APIs (Optional)
+
+- [ ] **ScraperAPI integration** — Layer 3 stubs exist, need real implementation
   - Real call: `http://api.scraperapi.com?api_key={key}&url={url}&render=true`
-  - Cloudflare detection: check `cf-ray` header + challenge text patterns
   - Auto-trigger: if httpx returns 403/429/503 AND Playwright also blocked
-
 - [ ] **Zyte integration** — POST to `https://api.zyte.com/v1/extract`
+  - Already stubbed in `scraper.py`
+
+---
+
+## 🔜 Phase 4.6 — Resume Polish
 
 - [ ] **`datapulse resume`** — currently re-runs from scratch
   - Should continue from `job.urls_pending` without re-creating the Job
   - Load existing `job.selector_cache` to skip selector rediscovery
   - Append new results to existing `job.output_path` file
-
-- [ ] **Actionable error messages** for common failures:
-  - 403/429: "Try `--playwright` or add SCRAPERAPI_KEY to secrets.env"
-  - No items extracted: "Try a more specific `--target` description"
-  - LiteLLM unreachable: "Check LLM_BASE_URL and that the proxy is running"
-  - Ollama 404 (model missing): "Run: ollama pull qwen2.5:1.5b"
-
-- [ ] **Deduplication in `--paginate` mode** — featured items repeat on every page
-  (e.g. MWC: 1000 total, 844 unique). Add dedup by name or URL in formatter.
-
-- [ ] **Integration tests** matching spec Section 6:
-  - UC-01: link extraction from `https://news.ycombinator.com`
-  - UC-02: structured data from `https://books.toscrape.com`
-  - UC-03: deep article extraction (mock server)
-  - UC-04: JS infinite scroll (Playwright path)
-
-- [ ] **`datapulse jobs` polish** — show selector used, output file path
 
 ---
 
@@ -357,6 +430,10 @@ datapulse resume job_20260506_143201_abc123
 | `--depth` | from config | Crawl depth (0=seed only) |
 | `--playwright` | off | Force Playwright layer (JS/SPA pages) |
 | `--paginate` | off | Click through Next Page buttons — for JS-paginated sites (implies Playwright) |
+| `--max-pages` | config | Max pages to click through with `--paginate` |
+| `--follow` | off | Visit each extracted URL and scrape detail pages |
+| `--detail-target` | — | What to extract from detail pages, e.g. `"email and social media"` |
+| `--max-follow` | 50 | Max detail URLs to follow |
 | `--dry-run` | off | Show parsed intent, skip fetch |
 | `--debug` | off | Verbose logs + HTML snapshots to `output/debug/` |
 

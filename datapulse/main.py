@@ -148,6 +148,12 @@ def run(
         help="Click through Next/pagination buttons (Playwright only, for client-side paginated sites)"),
     max_pages: Optional[int] = typer.Option(None, "--max-pages",
         help="Max pages to click through with --paginate (overrides playwright.max_pages in config)"),
+    follow: bool = typer.Option(False, "--follow",
+        help="After listing crawl, visit each extracted URL and scrape detail pages"),
+    detail_target: Optional[str] = typer.Option(None, "--detail-target",
+        help='What to extract from each detail page, e.g. "email and social media links"'),
+    max_follow: Optional[int] = typer.Option(None, "--max-follow",
+        help="Max detail URLs to follow (default: 50)"),
     debug: bool = typer.Option(False, "--debug",
         help="Verbose logging + save raw/clean HTML snapshots to output/debug/"),
 ):
@@ -175,6 +181,9 @@ def run(
         force_playwright=force_playwright,
         paginate=paginate,
         max_pages_override=max_pages,
+        follow=follow,
+        detail_target=detail_target,
+        max_follow=max_follow,
         debug=debug,
     ))
 
@@ -191,6 +200,9 @@ async def _run_pipeline(
     force_playwright: bool,
     paginate: bool = False,
     max_pages_override: Optional[int] = None,
+    follow: bool = False,
+    detail_target: Optional[str] = None,
+    max_follow: Optional[int] = None,
     debug: bool = False,
 ) -> None:
     from datapulse.config import cfg
@@ -199,7 +211,7 @@ async def _run_pipeline(
     from datapulse.modules.scope_guard import init_job_scope, enqueue_discovered_links, should_follow_links
     from datapulse.modules.scraper import scrape, extract_links
     from datapulse.modules.extractor import extract
-    from datapulse.modules.formatter import format_result
+    from datapulse.modules.formatter import format_result, deduplicate_items
     from datapulse.utils.html_cleaner import clean_html_keep_tags
 
     t_start = time.monotonic()
@@ -321,9 +333,12 @@ async def _run_pipeline(
                     scrape_result = await scrape(url, force_playwright=force_playwright or paginate, paginate=paginate, max_pages=effective_max_pages)
 
                     if scrape_result.error or not scrape_result.html:
+                        err_msg = scrape_result.error or "empty response"
+                        hint = _scrape_error_hint(scrape_result.status_code, err_msg, force_playwright or paginate)
                         progress.print(
                             f" [red]✗[/] {short_url}\n"
-                            f"   [dim]{scrape_result.error or 'empty response'}[/]"
+                            f"   [dim]{err_msg}[/]"
+                            + (f"\n   [yellow]→[/] [dim]{hint}[/]" if hint else "")
                         )
                         job.mark_url_failed(url)
                         return
@@ -386,6 +401,11 @@ async def _run_pipeline(
                             f"   {method_tag}  [bold]{len(extraction.items)}[/] items"
                             f"{selector_hint_str}"
                         )
+                        if extraction.method == "text_only" and intent.content_target and len(extraction.items) <= 1:
+                            progress.print(
+                                "   [yellow]⚠[/] [dim]No structured items found — "
+                                "try a more specific --target or --debug to inspect HTML[/]"
+                            )
 
                     if should_follow_links(job):
                         links = extract_links(scrape_result.html, url)
@@ -401,15 +421,97 @@ async def _run_pipeline(
 
             await asyncio.gather(*[process_url(u) for u in batch])
 
-    # ── Format and output ─────────────────────────────────────────────────────
+    # ── Deduplication (paginate mode) ─────────────────────────────────────────
     from datapulse.modules.extractor import ExtractionResult
+
+    if paginate and all_results:
+        all_results, removed = deduplicate_items(all_results)
+        if removed:
+            console.print(f" [dim]Deduplication: removed {removed} repeated items[/]")
+
+    # ── Follow phase (detail crawl) ───────────────────────────────────────────
+    detail_by_url: dict[str, list] = {}
+    detail_schema: list[str] = []
+
+    if follow and detail_target and all_results:
+        follow_urls = _extract_follow_urls(all_results, intent.url)
+        cap = max_follow or 50
+        follow_urls = follow_urls[:cap]
+
+        if follow_urls:
+            console.print(
+                f"\n [bold cyan]Follow phase[/]  [dim]·[/]  "
+                f"[bold]{len(follow_urls)}[/] detail URLs  [dim]·[/]  "
+                f"target: [cyan]{detail_target}[/]\n"
+            )
+            follow_selector_cache: dict[str, str] = {}
+
+            with Progress(
+                SpinnerColumn(),
+                TextColumn(" [progress.description]{task.description}"),
+                BarColumn(bar_width=28),
+                MofNCompleteColumn(),
+                TimeElapsedColumn(),
+                console=console,
+                transient=False,
+            ) as fprogress:
+                ftask = fprogress.add_task("[cyan]Following[/]", total=len(follow_urls))
+
+                for fu_batch in [follow_urls[i:i+concurrency] for i in range(0, len(follow_urls), concurrency)]:
+                    async def follow_url(furl: str) -> None:
+                        async with sem:
+                            fshort = furl[:70] + "…" if len(furl) > 70 else furl
+                            fprogress.update(ftask, description=f"[cyan]Detail[/] [dim]{fshort}[/]")
+                            fscrape = await scrape(furl, force_playwright=force_playwright)
+                            if fscrape.error or not fscrape.html:
+                                fprogress.advance(ftask)
+                                return
+
+                            if debug:
+                                clean_snap = clean_html_keep_tags(fscrape.html)
+                                _save_debug_html(job.job_id, furl, fscrape.html, clean_snap)
+
+                            fextraction = extract(
+                                fscrape.html,
+                                url=fscrape.url,
+                                content_target=detail_target,
+                                skip_selector=True,
+                            )
+                            for f in fextraction.schema_fields:
+                                if f not in detail_schema and f not in ("content", "value"):
+                                    detail_schema.append(f)
+
+                            detail_by_url[furl] = fextraction.items
+                            layer_tag = {"httpx": "[green]httpx[/]", "playwright": "[yellow]playwright[/]"}.get(fscrape.layer_used, fscrape.layer_used)
+                            method_tag = (
+                                "[green]selector[/]" if fextraction.method == "llm_selector"
+                                else "[cyan]text-llm[/]" if fextraction.method == "llm_text"
+                                else "[dim]text[/]"
+                            )
+                            fprogress.print(f" [green]✓[/] {layer_tag}  [dim]{fshort}[/]  {method_tag}  [bold]{len(fextraction.items)}[/] items")
+                            fprogress.advance(ftask)
+
+                    await asyncio.gather(*[follow_url(u) for u in fu_batch])
+
+    # ── Format and output ─────────────────────────────────────────────────────
 
     if intent.intent_type == "url_list":
         display_items = [f"{lnk.get('text', '')} → {lnk.get('href', '')}" for lnk in all_results]
         schema_fields = ["text", "href"]
     else:
-        display_items = [str(i) for i in all_results if i]
-        schema_fields = inferred_schema or ["value"]
+        listing_items = [str(i) for i in all_results if i]
+        if detail_by_url:
+            display_items = _merge_with_details(listing_items, detail_by_url, intent.url)
+            schema_fields = (inferred_schema or ["value"]) + [f for f in detail_schema if f not in (inferred_schema or [])]
+        else:
+            display_items = listing_items
+            schema_fields = inferred_schema or ["value"]
+
+    if not display_items and intent.content_target:
+        console.print(
+            " [yellow]⚠ Tip:[/] [dim]No structured data found. "
+            "Try --debug to inspect the HTML, or rephrase --target.[/]"
+        )
 
     combined = ExtractionResult(
         items=display_items or ["No data extracted."],
@@ -454,6 +556,61 @@ async def _run_pipeline(
         f"{selector_str}"
         f"\n [dim]{job.job_id}[/]\n"
     )
+
+
+def _scrape_error_hint(status_code: int, error: str, playwright_active: bool) -> str | None:
+    if status_code in (403, 429, 503):
+        if not playwright_active:
+            return "blocked — try adding --playwright flag"
+        return "blocked even with Playwright — add SCRAPERAPI_KEY to secrets.env"
+    if "ssl" in error.lower() or "certificate" in error.lower():
+        return "SSL error — Playwright should resolve this automatically; check network if it persists"
+    if "timeout" in error.lower():
+        return "timeout — try increasing timeout_seconds in datapulse.config.yaml"
+    return None
+
+
+def _extract_follow_urls(items: list, base_url: str) -> list[str]:
+    """Parse 'url: <href>' lines from extracted items and resolve to absolute URLs."""
+    from urllib.parse import urljoin
+    seen: set[str] = set()
+    urls: list[str] = []
+    for item in items:
+        m = re.search(r'url:\s*(\S+)', str(item), re.IGNORECASE)
+        if m:
+            href = m.group(1).strip()
+            abs_url = urljoin(base_url, href)
+            if abs_url not in seen and abs_url != base_url:
+                seen.add(abs_url)
+                urls.append(abs_url)
+    return urls
+
+
+def _find_domain_selector(url: str, cache: dict[str, str]) -> str | None:
+    """Find a cached selector by matching netloc — scoped to a given cache dict."""
+    from urllib.parse import urlparse
+    domain = urlparse(url).netloc
+    for cached_url, selector in cache.items():
+        if urlparse(cached_url).netloc == domain:
+            return selector
+    return None
+
+
+def _merge_with_details(listing_items: list[str], detail_by_url: dict[str, list], base_url: str) -> list[str]:
+    """Merge listing items with their detail page results by matching on URL."""
+    from urllib.parse import urljoin
+    merged: list[str] = []
+    for item in listing_items:
+        m = re.search(r'url:\s*(\S+)', item, re.IGNORECASE)
+        if m:
+            href = m.group(1).strip()
+            abs_url = urljoin(base_url, href)
+            detail_items = detail_by_url.get(abs_url, [])
+            detail_text = "\n".join(str(i) for i in detail_items) if detail_items else ""
+            merged.append(item + ("\n" + detail_text if detail_text else ""))
+        else:
+            merged.append(item)
+    return merged
 
 
 def _find_pattern_selector(url: str, cache: dict[str, str]) -> str | None:
@@ -528,7 +685,8 @@ def jobs(
     table.add_column("Status", width=10)
     table.add_column("Items", justify="right")
     table.add_column("Pending", justify="right")
-    table.add_column("Query / URL", max_width=60, no_wrap=True)
+    table.add_column("Query / URL", max_width=45, no_wrap=True)
+    table.add_column("Output", max_width=28, no_wrap=True, style="dim")
     table.add_column("Created", style="dim")
 
     colors = {
@@ -537,12 +695,14 @@ def jobs(
     }
     for j in all_jobs:
         c = colors.get(j["status"], "white")
+        out = j.get("output_path") or f"[dim]stdout ({j.get('output_format','json')})[/]"
         table.add_row(
             j["job_id"],
             f"[{c}]{j['status']}[/]",
             str(j["urls_processed"]),
             str(j["urls_pending"]),
             j["query"],
+            out,
             j["created_at"][:19].replace("T", " "),
         )
     console.print(table)

@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 # Tags that are never part of page content
 _STRIP_TAGS = [
     "script", "style", "noscript", "iframe", "svg",
-    "head", "header", "nav", "footer", "aside",
+    "head", "header", "nav", "footer",
     "link",  # CSS preload links injected into body by SPAs
 ]
 
