@@ -160,9 +160,21 @@ datapulse run --url https://www.mwcbarcelona.com/exhibitors/ \
   --target "exhibitor name and URL" \
   --paginate \
   --output mwc_exhibitors.json
+
+# Limit to first 2 pages
+datapulse run --url https://www.mwcbarcelona.com/exhibitors/ \
+  --target "exhibitor name and URL" \
+  --paginate --max-pages 2 \
+  --output mwc_exhibitors.json
 ```
 
-`--paginate` automatically clicks through "Next Page" buttons, dismisses cookie consent popups, and combines all pages into a single extraction pass. Configure `playwright.max_pages` in `datapulse.config.yaml` (default: 20).
+`--paginate` automatically clicks through "Next Page" buttons, dismisses cookie consent popups, and combines all pages into a single extraction pass. `--max-pages` overrides the config default (20) for the current job.
+
+Both `--paginate` and `--max-pages` are also detected from natural language:
+
+```bash
+datapulse run "get exhibitor names and urls from https://www.mwcbarcelona.com/exhibitors/ paginate 2 pages in csv file"
+```
 
 ### Debug mode
 
@@ -200,6 +212,7 @@ datapulse run --url https://example.com --target "..." --debug
 | `--depth` | from config | Crawl depth (0=seed only) |
 | `--playwright` | off | Force Playwright layer (required for SPAs) |
 | `--paginate` | off | Click through Next Page buttons (JS-paginated sites, implies Playwright) |
+| `--max-pages` | config | Max pages to click through (overrides `playwright.max_pages` for this job) |
 | `--dry-run` | off | Show parsed intent, skip fetch |
 | `--debug` | off | Verbose logs + HTML snapshots to `output/debug/` |
 

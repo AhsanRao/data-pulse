@@ -221,18 +221,21 @@ output/debug/                Raw + clean HTML snapshots (--debug only, gitignore
 - [x] `output/` and `.datapulse/` added to `.gitignore`
 - [x] `secrets.env` — updated to use generic `LLM_*` env vars with provider examples
 
-### ✅ Phase 3.9 — Intent-Driven Output + Auto Playwright (Complete)
-- [x] `intent_parser.py` — prompt updated to extract `output_format` and `output_file` from NL query
-- [x] `intent_parser.py` — `_validated_format()` and `_heuristic_output()` helpers for fallback path
-- [x] `job.py` — `Intent` gets `output_format` and `output_file` fields (both optional, backward-compat)
-- [x] `main.py` — applies `intent.output_file` / `intent.output_format` when no CLI flags override them
-- [x] `main.py` — job header now shows `Output` line (file path or `stdout`)
-- [x] `scraper.py` — `_is_js_required()` detects "JavaScript must be enabled" pages; auto-upgrades httpx→Playwright
-- [x] NL query form now works identically to explicit flags for JS-heavy sites
+### ✅ Phase 3.9 — Intent-Driven Output + Pagination + Auto Playwright (Complete)
+- [x] `intent_parser.py` — prompt extracts `output_format`, `output_file`, `paginate`, `max_pages` from NL query
+- [x] `intent_parser.py` — `_validated_format()`, `_heuristic_output()`, `_heuristic_paginate()` helpers for fallback path
+- [x] `job.py` — `Intent` gets `output_format`, `output_file`, `paginate`, `max_pages` fields (backward-compat)
+- [x] `main.py` — applies intent output/paginate/max_pages hints when no CLI flags override them
+- [x] `main.py` — added `--max-pages` CLI flag; CLI value wins over intent-detected value
+- [x] `main.py` — job header shows all fields on one Layer line: `playwright +paginate · Max Pages N · Format csv · Max URLs 25`
+- [x] `main.py` — job header shows `Output` line (file path or `stdout`)
+- [x] `scraper.py` — `_is_js_required()` auto-upgrades httpx→Playwright for JS-required pages
+- [x] `scraper.py` — `max_pages` threaded through `scrape()` → `_fetch_playwright()` → `_paginate_playwright()`
+- [x] `scraper.py` — httpx `ConnectError`/SSL errors now fall through to Playwright instead of crashing
 
 **Verified:**
-- `datapulse run 'get me exhibitors name and addresses in json file from https://cyberab.org/...'`
-  → auto-detects Playwright (JS-required page), writes to `output/cyberab_org.json`
+- `datapulse run 'get exhibitor names and urls from https://www.mwcbarcelona.com/exhibitors/ paginate 2 pages in csv file'`
+  → intent detects paginate=True, max_pages=2, format=csv, writes to `output/mwcbarcelona_com.csv`
 
 ### ✅ Phase 3.8 — Structured Extraction + Pagination (Complete)
 - [x] `main.py` — ASCII art DataPulse banner (centered, Claude Code style)

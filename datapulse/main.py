@@ -146,6 +146,8 @@ def run(
     force_playwright: bool = typer.Option(False, "--playwright", help="Force Playwright layer"),
     paginate: bool = typer.Option(False, "--paginate",
         help="Click through Next/pagination buttons (Playwright only, for client-side paginated sites)"),
+    max_pages: Optional[int] = typer.Option(None, "--max-pages",
+        help="Max pages to click through with --paginate (overrides playwright.max_pages in config)"),
     debug: bool = typer.Option(False, "--debug",
         help="Verbose logging + save raw/clean HTML snapshots to output/debug/"),
 ):
@@ -172,6 +174,7 @@ def run(
         dry_run=dry_run,
         force_playwright=force_playwright,
         paginate=paginate,
+        max_pages_override=max_pages,
         debug=debug,
     ))
 
@@ -187,6 +190,7 @@ async def _run_pipeline(
     dry_run: bool,
     force_playwright: bool,
     paginate: bool = False,
+    max_pages_override: Optional[int] = None,
     debug: bool = False,
 ) -> None:
     from datapulse.config import cfg
@@ -249,7 +253,8 @@ async def _run_pipeline(
     job.status = "running"
     job.save()
 
-    effective_max_pages = intent.max_pages  # may be None (use config default)
+    # CLI --max-pages wins over intent-detected value; both fall back to config default
+    effective_max_pages = max_pages_override or intent.max_pages
     if paginate:
         layer_label = "[yellow]playwright[/] [dim]+paginate[/]"
     elif force_playwright:
