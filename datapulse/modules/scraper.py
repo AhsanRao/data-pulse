@@ -28,6 +28,17 @@ _CLOUDFLARE_SIGNATURES = [
     "Checking if the site connection is secure",
 ]
 
+_JS_REQUIRED_PATTERNS = [
+    "javascript must be enabled",
+    "javascript is required",
+    "please enable javascript",
+    "this site requires javascript",
+    "enable javascript to continue",
+    "requires javascript to function",
+    "javascript needs to be enabled",
+    "javascript to be enabled",
+]
+
 _BOT_STATUS_CODES = {403, 429, 503}
 
 
@@ -70,6 +81,11 @@ def _is_cloudflare_blocked(result: ScrapeResult) -> bool:
         return True
     lower = result.html.lower()
     return any(sig.lower() in lower for sig in _CLOUDFLARE_SIGNATURES)
+
+
+def _is_js_required(result: ScrapeResult) -> bool:
+    lower = result.html.lower()
+    return any(p in lower for p in _JS_REQUIRED_PATTERNS)
 
 
 # ── Layer 2: Playwright ───────────────────────────────────────────────────────
@@ -291,9 +307,12 @@ async def scrape(url: str, force_playwright: bool = False, paginate: bool = Fals
     if not force_playwright and not paginate:
         logger.debug("Layer 1 (httpx): %s", url)
         result = await _fetch_httpx(url, timeout)
-        if result.status_code == 200 and not _is_cloudflare_blocked(result):
+        if result.status_code == 200 and not _is_cloudflare_blocked(result) and not _is_js_required(result):
             return result
-        logger.debug("httpx returned %d or bot-blocked — trying Playwright", result.status_code)
+        if _is_js_required(result):
+            logger.debug("httpx got JS-required page — upgrading to Playwright automatically")
+        else:
+            logger.debug("httpx returned %d or bot-blocked — trying Playwright", result.status_code)
 
     # Layer 2 — Playwright
     logger.debug("Layer 2 (Playwright): %s", url)
