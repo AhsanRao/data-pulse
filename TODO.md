@@ -70,7 +70,7 @@ Natural language query  OR  --url flag
 ```
 
 **LLM backends (auto-selected in priority order):**
-1. **Any OpenAI-compatible provider** — if `LLM_BASE_URL` + `LLM_API_KEY` set in `secrets.env` (primary; currently Google Gemini)
+1. **Any OpenAI-compatible provider** — if `LLM_BASE_URL` + `LLM_API_KEY` set in `secrets.env` (primary; currently self-hosted LLM)
 2. **Anthropic Claude Haiku** — if `ANTHROPIC_API_KEY` set and primary LLM not configured
 3. **Ollama (local)** — if Ollama running and both above unavailable
 4. **Text-only mode** — if no LLM is available (returns cleaned text, no structured data)
@@ -136,8 +136,8 @@ output/debug/                Raw + clean HTML snapshots (--debug only, gitignore
    System Python is Homebrew 3.14 — packages are not installed there.
 
 3. **All LLM configuration lives in `secrets.env` via `LLM_*` env vars.**
-   `LLM_CHAT_PATH` overrides the completions endpoint path — needed for Google Gemini
-   (`/chat/completions`) vs standard providers (`/v1/chat/completions`, the default).
+   `LLM_CHAT_PATH` overrides the completions endpoint path — default `/v1/chat/completions`.
+   Some providers use a different path (e.g. `/chat/completions`) — set this env var to match.
    `ANTHROPIC_MODEL` and `OLLAMA_MODEL` override the fallback model defaults
    (set in `datapulse.config.yaml` as `selector_model` / `local_model`).
 
@@ -203,12 +203,12 @@ output/debug/                Raw + clean HTML snapshots (--debug only, gitignore
 - [x] `scope_guard.py` — depth-aware URL queue + `enqueue_discovered_links()`
 - [x] `main.py` — full NL query path + concurrent deep crawl loop
 
-### ✅ Phase 3.5 — Generic LLM Client + Google Gemini (Complete)
+### ✅ Phase 3.5 — Generic LLM Client + OpenAI-Compatible Provider Support (Complete)
 - [x] `utils/llm_client.py` — OpenAI-compatible `httpx` wrapper (renamed from `litellm_client.py`)
 - [x] `config.py` — `LLM_*` env var properties; `ANTHROPIC_MODEL` + `OLLAMA_MODEL` for fallback model selection
 - [x] `extractor.py` — `llm_client` first in `_llm_call()` routing; `has_llm` flag
 - [x] `intent_parser.py` — `_parse_with_llm()` (renamed from `_parse_with_litellm()`)
-- [x] `secrets.env` — switched to Google Gemini (`gemini-3.1-flash-lite`), added `LLM_CHAT_PATH`
+- [x] `secrets.env` — switched to generic `LLM_*` env vars, added `LLM_CHAT_PATH` for provider-specific path overrides
 - [x] `llm_client.py` — `LLM_CHAT_PATH` env var for provider-specific completions path
 - [x] `llm_client.py` — `is_available()` checks config vars only (no HTTP ping — works for cloud APIs)
 
@@ -371,7 +371,7 @@ datapulse resume job_20260506_143201_abc123
 
 | Condition | Backend Used |
 |---|---|
-| `LLM_BASE_URL` + `LLM_API_KEY` set in `secrets.env` | **Configured provider** (currently Gemini `gemini-3.1-flash-lite`) |
+| `LLM_BASE_URL` + `LLM_API_KEY` set in `secrets.env` | **Configured provider** (any OpenAI-compatible — self-hosted, cloud, etc.) |
 | `ANTHROPIC_API_KEY` set, primary LLM not configured | Claude Haiku — selector + schema + validation |
 | Ollama running, both above unavailable | Local model (e.g. `gemma3:4b`, `qwen2.5-coder:7b`) |
 | None available | Text-only mode — cleaned text, no structured extraction |
