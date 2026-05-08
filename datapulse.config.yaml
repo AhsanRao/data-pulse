@@ -4,6 +4,7 @@ scraping:
   concurrency: 4
   timeout_seconds: 60      # increased for JS-heavy SPAs
   same_domain_only: true
+  request_delay_ms: 0      # ms to wait between URL batches (0=off, 500-2000 for polite crawling)
 
 playwright:
   scroll_increment_px: 800

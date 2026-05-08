@@ -192,6 +192,7 @@ async def _run_pipeline(
     paginate: bool = False,
     max_pages_override: Optional[int] = None,
     debug: bool = False,
+    existing_job=None,
 ) -> None:
     from datapulse.config import cfg
     from datapulse.job import Job
@@ -205,7 +206,12 @@ async def _run_pipeline(
     t_start = time.monotonic()
 
     # ── Build intent ──────────────────────────────────────────────────────────
-    if url_override:
+    if existing_job is not None:
+        intent = existing_job.intent
+        fmt = existing_job.output_format
+        output = Path(existing_job.output_path) if existing_job.output_path else output
+        raw_query = existing_job.query
+    elif url_override:
         intent = parse_url_intent(
             url=url_override,
             intent_type="structured_data" if target_override else "page_content",
@@ -242,16 +248,21 @@ async def _run_pipeline(
         if not paginate and intent.paginate:
             paginate = True
 
-    # ── Create job ────────────────────────────────────────────────────────────
-    job = Job(
-        query=raw_query,
-        intent=intent,
-        output_format=fmt,
-        output_path=str(output) if output else None,
-    )
-    init_job_scope(job)
-    job.status = "running"
-    job.save()
+    # ── Create or restore job ─────────────────────────────────────────────────
+    if existing_job is not None:
+        job = existing_job
+        job.status = "running"
+        job.save()
+    else:
+        job = Job(
+            query=raw_query,
+            intent=intent,
+            output_format=fmt,
+            output_path=str(output) if output else None,
+        )
+        init_job_scope(job)
+        job.status = "running"
+        job.save()
 
     # CLI --max-pages wins over intent-detected value; both fall back to config default
     effective_max_pages = max_pages_override or intent.max_pages
@@ -265,22 +276,31 @@ async def _run_pipeline(
     target_label = f"[cyan]{intent.content_target}[/]" if intent.content_target else "[dim]full text[/]"
     output_label = f"[green]{output}[/]" if output else "[dim]stdout[/]"
 
-    layer_line = (
-        f"{layer_label}"
-        + (f"  [dim]·[/]  [bold]Max Pages[/] {effective_max_pages}" if paginate and effective_max_pages else "")
-        + f"  [dim]·[/]  [bold]Format[/] [green]{fmt}[/]"
-        + f"  [dim]·[/]  [bold]Max URLs[/] {intent.max_urls}"
-    )
+    if existing_job is not None:
+        console.print(
+            f" [bold]Resuming[/] [dim]{job.job_id}[/]\n"
+            f" [bold]URL[/]     {intent.url}\n"
+            f" [bold]Target[/]  {target_label}\n"
+            f" [bold]Done[/]    {len(job.urls_processed)}  [dim]·[/]  "
+            f"[bold]Pending[/] {len(job.urls_pending)}\n"
+            f" [bold]Output[/]  {output_label}\n"
+        )
+    else:
+        layer_line = (
+            f"{layer_label}"
+            + (f"  [dim]·[/]  [bold]Max Pages[/] {effective_max_pages}" if paginate and effective_max_pages else "")
+            + f"  [dim]·[/]  [bold]Format[/] [green]{fmt}[/]"
+            + f"  [dim]·[/]  [bold]Max URLs[/] {intent.max_urls}"
+        )
+        console.print(
+            f" [bold]Job[/]     [dim]{job.job_id}[/]\n"
+            f" [bold]URL[/]     {intent.url}\n"
+            f" [bold]Target[/]  {target_label}\n"
+            f" [bold]Layer[/]   {layer_line}\n"
+            f" [bold]Output[/]  {output_label}\n"
+        )
 
-    console.print(
-        f" [bold]Job[/]     [dim]{job.job_id}[/]\n"
-        f" [bold]URL[/]     {intent.url}\n"
-        f" [bold]Target[/]  {target_label}\n"
-        f" [bold]Layer[/]   {layer_line}\n"
-        f" [bold]Output[/]  {output_label}\n"
-    )
-
-    if dry_run:
+    if dry_run and existing_job is None:
         console.print(" [yellow]Dry run — skipping fetch.[/]")
         console.print_json(json.dumps({"job_id": job.job_id, "intent": {
             "url": intent.url, "intent_type": intent.intent_type,
@@ -293,7 +313,22 @@ async def _run_pipeline(
     all_results: list = []
     inferred_schema: list[str] = []
     concurrency = cfg.scraping.get("concurrency", 4)
+    request_delay_ms: int = cfg.scraping.get("request_delay_ms", 0)
     sem = asyncio.Semaphore(concurrency)
+
+    # Resume: pre-populate results already collected in previous run
+    if existing_job is not None:
+        for saved in job.results:
+            if isinstance(saved, dict):
+                if "links" in saved:
+                    all_results.extend(saved["links"])
+                elif "items" in saved:
+                    all_results.extend(saved["items"])
+                    if saved.get("selector") and saved.get("url"):
+                        job.selector_cache[saved["url"]] = saved["selector"]
+
+    # Dedup fingerprint set — prevents duplicate items in --paginate mode
+    _seen_fingerprints: set[int] = {hash(str(r)[:200]) for r in all_results}
 
     with Progress(
         SpinnerColumn(),
@@ -305,8 +340,8 @@ async def _run_pipeline(
         transient=False,
     ) as progress:
         total_task = progress.add_task(
-            f"[cyan]Crawling[/]",
-            total=min(intent.max_urls, len(job.urls_pending) or 1),
+            "[cyan]Crawling[/]",
+            total=len(job.urls_pending) or 1,
         )
 
         while job.urls_pending:
@@ -321,10 +356,20 @@ async def _run_pipeline(
                     scrape_result = await scrape(url, force_playwright=force_playwright or paginate, paginate=paginate, max_pages=effective_max_pages)
 
                     if scrape_result.error or not scrape_result.html:
-                        progress.print(
-                            f" [red]✗[/] {short_url}\n"
-                            f"   [dim]{scrape_result.error or 'empty response'}[/]"
-                        )
+                        code = scrape_result.status_code
+                        if code in {403, 429, 503}:
+                            hint = (
+                                f"HTTP {code} — try [bold]--playwright[/] "
+                                f"or add [bold]SCRAPERAPI_KEY[/] to secrets.env"
+                            )
+                        elif not scrape_result.html:
+                            hint = (
+                                scrape_result.error
+                                or "empty response — page may require JS, try [bold]--playwright[/]"
+                            )
+                        else:
+                            hint = scrape_result.error or "unknown error"
+                        progress.print(f" [red]✗[/] {short_url}\n   [dim]{hint}[/]")
                         job.mark_url_failed(url)
                         return
 
@@ -343,11 +388,19 @@ async def _run_pipeline(
 
                     if intent.intent_type == "url_list":
                         links = extract_links(scrape_result.html, url)
-                        all_results.extend(links)
-                        job.mark_url_done(url, result={"url": url, "links": links})
+                        new_links = []
+                        for lnk in links:
+                            fp = hash(str(lnk)[:200])
+                            if fp not in _seen_fingerprints:
+                                _seen_fingerprints.add(fp)
+                                new_links.append(lnk)
+                        all_results.extend(new_links)
+                        job.mark_url_done(url, result={"url": url, "links": new_links})
+                        duped = len(links) - len(new_links)
+                        dedup_note = f"  [dim]({duped} dupes skipped)[/]" if duped else ""
                         progress.print(
                             f" [green]✓[/] {layer_tag}  [dim]{short_url}[/]"
-                            f"  →  [bold]{len(links)}[/] links"
+                            f"  →  [bold]{len(new_links)}[/] links{dedup_note}"
                         )
                     else:
                         selector_hint = job.selector_cache.get(url) or \
@@ -365,10 +418,16 @@ async def _run_pipeline(
                         if extraction.schema_fields and extraction.schema_fields != ["value"]:
                             inferred_schema[:] = extraction.schema_fields
 
-                        all_results.extend(extraction.items)
+                        new_items = []
+                        for item in extraction.items:
+                            fp = hash(str(item)[:200])
+                            if fp not in _seen_fingerprints:
+                                _seen_fingerprints.add(fp)
+                                new_items.append(item)
+                        all_results.extend(new_items)
                         job.mark_url_done(url, result={
                             "url": scrape_result.url,
-                            "items": extraction.items,
+                            "items": new_items,
                             "selector": extraction.selector_used,
                             "method": extraction.method,
                         })
@@ -381,11 +440,19 @@ async def _run_pipeline(
                             f"  [dim]{extraction.selector_used}[/]"
                             if extraction.selector_used else ""
                         )
-                        progress.print(
-                            f" [green]✓[/] {layer_tag}  [dim]{short_url}[/]\n"
-                            f"   {method_tag}  [bold]{len(extraction.items)}[/] items"
-                            f"{selector_hint_str}"
-                        )
+                        duped = len(extraction.items) - len(new_items)
+                        dedup_note = f"  [dim]({duped} dupes)[/]" if duped else ""
+                        if not new_items and extraction.method == "llm_selector":
+                            progress.print(
+                                f" [green]✓[/] {layer_tag}  [dim]{short_url}[/]\n"
+                                f"   [yellow]⚠[/] 0 items — try a more specific [bold]--target[/]"
+                            )
+                        else:
+                            progress.print(
+                                f" [green]✓[/] {layer_tag}  [dim]{short_url}[/]\n"
+                                f"   {method_tag}  [bold]{len(new_items)}[/] items"
+                                f"{selector_hint_str}{dedup_note}"
+                            )
 
                     if should_follow_links(job):
                         links = extract_links(scrape_result.html, url)
@@ -400,6 +467,9 @@ async def _run_pipeline(
                     progress.advance(total_task)
 
             await asyncio.gather(*[process_url(u) for u in batch])
+
+            if request_delay_ms > 0 and job.urls_pending:
+                await asyncio.sleep(request_delay_ms / 1000)
 
     # ── Format and output ─────────────────────────────────────────────────────
     from datapulse.modules.extractor import ExtractionResult
@@ -487,18 +557,22 @@ def resume(
         console.print(f" [green]✓ Job {job_id} is already complete.[/]")
         raise typer.Exit(0)
 
-    console.print(f" Resuming [bold]{job_id}[/]  —  {len(job.urls_pending)} URLs remaining\n")
+    if not job.urls_pending:
+        console.print(f" [yellow]No pending URLs in job {job_id}.[/]  Use [bold]datapulse run[/] to start a new job.")
+        raise typer.Exit(0)
+
     asyncio.run(_run_pipeline(
         query=None,
-        url_override=job.intent.url,
-        target_override=job.intent.content_target or None,
+        url_override=None,
+        target_override=None,
         fmt=job.output_format,
         output=Path(job.output_path) if job.output_path else None,
-        max_urls_override=job.intent.max_urls,
-        depth_override=job.intent.depth,
+        max_urls_override=None,
+        depth_override=None,
         dry_run=False,
         force_playwright=False,
         debug=debug,
+        existing_job=job,
     ))
 
 

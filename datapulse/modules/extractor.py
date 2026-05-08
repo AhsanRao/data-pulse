@@ -188,9 +188,13 @@ def _validate_selector(
     selector: str,
     content_target: str,
     k: int = 5,
+    precomputed_elements: list[str] | None = None,
 ) -> tuple[bool, str]:
-    """Apply selector, pull k samples, ask LLM if they match the target."""
-    elements = apply_selector(html, selector)
+    """Apply selector, pull k samples, ask LLM if they match the target.
+
+    Pass precomputed_elements to skip re-applying the selector (used for XPath results).
+    """
+    elements = precomputed_elements if precomputed_elements is not None else apply_selector(html, selector)
     if not elements:
         return False, "Selector returned 0 elements."
 
@@ -294,6 +298,22 @@ def extract(
             continue
 
         if not sel_result.selector:
+            if sel_result.xpath:
+                from datapulse.utils.validator import apply_xpath
+                xpath_elements = apply_xpath(structural_html, sel_result.xpath)
+                if xpath_elements:
+                    try:
+                        valid, reason = _validate_selector(
+                            structural_html, sel_result.xpath, content_target,
+                            precomputed_elements=xpath_elements,
+                        )
+                    except Exception as exc:
+                        valid, reason = False, str(exc)
+                    logger.debug("XPath validation: valid=%s reason=%s", valid, reason)
+                    if valid:
+                        return _build_result(
+                            xpath_elements, f"xpath:{sel_result.xpath}", content_target, cleaned_text
+                        )
             logger.debug("LLM returned null selector — trying next chunk")
             continue
 

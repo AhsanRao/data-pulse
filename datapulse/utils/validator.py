@@ -9,13 +9,39 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+def apply_xpath(html: str, xpath: str) -> list[str]:
+    """Apply XPath expression and return text of matched elements."""
+    try:
+        from lxml import etree
+        from io import StringIO
+
+        parser = etree.HTMLParser()
+        tree = etree.parse(StringIO(html), parser)
+        matches = tree.xpath(xpath)
+        results = []
+        for el in matches:
+            if isinstance(el, str):
+                text = el.strip()
+            else:
+                text = (etree.tostring(el, method="text", encoding="unicode") or "").strip()
+            if text:
+                results.append(text)
+        return results
+    except Exception as exc:
+        logger.debug("XPath application failed: %s", exc)
+        return []
+
+
 def apply_selector(html: str, selector: str) -> list[str]:
-    """Apply a CSS selector and return text of matched elements.
+    """Apply a CSS selector (or xpath: prefixed XPath) and return text of matched elements.
 
     For anchor elements: emits "name: <heading>\nurl: <href>" so the formatter
     can parse them as separate fields rather than one blob of text.
     For all other elements: newline-separated text so block children are distinct.
     """
+    if selector.startswith("xpath:"):
+        return apply_xpath(html, selector[6:])
+
     from bs4 import BeautifulSoup
 
     soup = BeautifulSoup(html, "lxml")
