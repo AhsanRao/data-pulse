@@ -116,9 +116,9 @@ def test_extract_target_removes_filler():
     assert "get" not in target.lower()
 
 
-# ── LiteLLM path (mocked) ────────────────────────────────────────────────────
+# ── LLM path (mocked) ────────────────────────────────────────────────────────
 
-def test_parse_query_uses_litellm_when_available():
+def test_parse_query_uses_llm_when_available():
     mock_response = """{
         "url": "https://books.toscrape.com",
         "intent_type": "structured_data",
@@ -127,8 +127,8 @@ def test_parse_query_uses_litellm_when_available():
         "depth": 0
     }"""
 
-    with patch("datapulse.utils.litellm_client.is_available", return_value=True), \
-         patch("datapulse.utils.litellm_client.call", return_value=mock_response):
+    with patch("datapulse.utils.llm_client.is_available", return_value=True), \
+         patch("datapulse.utils.llm_client.call", return_value=mock_response):
         intent = parse_query("get book titles and prices from https://books.toscrape.com")
 
     assert intent.url == "https://books.toscrape.com"
@@ -137,7 +137,7 @@ def test_parse_query_uses_litellm_when_available():
 
 
 def test_parse_query_falls_back_to_heuristic_when_ollama_down():
-    with patch("datapulse.utils.litellm_client.is_available", return_value=False), \
+    with patch("datapulse.utils.llm_client.is_available", return_value=False), \
          patch("datapulse.modules.intent_parser.ollama_available", return_value=False):
         intent = parse_query("get all links from https://news.ycombinator.com")
 
@@ -146,8 +146,8 @@ def test_parse_query_falls_back_to_heuristic_when_ollama_down():
 
 
 def test_parse_query_falls_back_on_bad_json():
-    with patch("datapulse.utils.litellm_client.is_available", return_value=True), \
-         patch("datapulse.utils.litellm_client.call", return_value="not json at all"):
+    with patch("datapulse.utils.llm_client.is_available", return_value=True), \
+         patch("datapulse.utils.llm_client.call", return_value="not json at all"):
         intent = parse_query("get prices from https://example.com")
 
     assert "example.com" in intent.url
@@ -161,8 +161,8 @@ def test_parse_query_deep_content_sets_depth_2():
         "max_urls": 25,
         "depth": 2
     }"""
-    with patch("datapulse.utils.litellm_client.is_available", return_value=True), \
-         patch("datapulse.utils.litellm_client.call", return_value=mock_response):
+    with patch("datapulse.utils.llm_client.is_available", return_value=True), \
+         patch("datapulse.utils.llm_client.call", return_value=mock_response):
         intent = parse_query("get title and summary of each article on https://blog.example.com")
 
     assert intent.intent_type == "deep_content"
@@ -178,8 +178,8 @@ def test_parse_query_falls_back_to_heuristic_target_when_llm_returns_empty():
         "max_urls": 25,
         "depth": 0
     }"""
-    with patch("datapulse.utils.litellm_client.is_available", return_value=True), \
-         patch("datapulse.utils.litellm_client.call", return_value=mock_response):
+    with patch("datapulse.utils.llm_client.is_available", return_value=True), \
+         patch("datapulse.utils.llm_client.call", return_value=mock_response):
         intent = parse_query("get book titles and prices from https://books.toscrape.com")
 
     assert intent.content_target != ""
@@ -194,8 +194,8 @@ def test_parse_query_url_list_depth_is_zero():
         "max_urls": 25,
         "depth": 0
     }"""
-    with patch("datapulse.utils.litellm_client.is_available", return_value=True), \
-         patch("datapulse.utils.litellm_client.call", return_value=mock_response):
+    with patch("datapulse.utils.llm_client.is_available", return_value=True), \
+         patch("datapulse.utils.llm_client.call", return_value=mock_response):
         intent = parse_query("get all links from https://example.com")
 
     assert intent.intent_type == "url_list"

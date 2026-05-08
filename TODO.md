@@ -16,7 +16,7 @@
 | Config file | `datapulse.config.yaml` |
 | Venv | `.env/` (Python 3.14) — **this directory is the venv, not a dotenv file** |
 | API keys file | `secrets.env` (gitignored) |
-| Primary LLM | `mueen-80b` via LiteLLM proxy at `http://10.8.124.144:4000` |
+| Primary LLM | `mueen-80b` via self-hosted proxy at `http://10.8.124.144:4000` |
 | Ollama model | `qwen2.5:1.5b` — fallback only; needs `brew services start ollama` |
 | Job store | `.datapulse/jobs/` (project-local, gitignored) |
 | LLM logs | `.datapulse/logs/llm_calls.log` |
@@ -36,7 +36,7 @@ Natural language query  OR  --url flag
           │
    ┌──────▼────────────────┐
    │ 1. Intent Parser        │  datapulse/modules/intent_parser.py
-   │    ✅ Done              │  LiteLLM mueen-80b → structured Intent
+   │    ✅ Done              │  LLM (any provider) → structured Intent
    │                         │  Ollama fallback → heuristic fallback
    └──────┬────────────────┘
           │  Intent { url, intent_type, content_target, max_urls, depth }
@@ -85,7 +85,7 @@ datapulse/
 │                            ASCII art banner, --paginate flag, inferred_schema passthrough
 ├── job.py                   Job dataclass, save/load/checkpoint, list_all
 ├── config.py                Config loader: datapulse.config.yaml + secrets.env
-│                            LLM_* env vars (primary), LITELLM_* (backward compat fallback)
+│                            LLM_* env vars; ANTHROPIC_MODEL + OLLAMA_MODEL for fallback models
 │
 ├── modules/
 │   ├── intent_parser.py     Module 1 — LLM/Ollama NL → Intent + heuristic fallback
@@ -135,11 +135,11 @@ output/debug/                Raw + clean HTML snapshots (--debug only, gitignore
 2. **Always use `.env/bin/*` for all commands.**
    System Python is Homebrew 3.14 — packages are not installed there.
 
-3. **LLM env vars use `LLM_*` prefix (not `LITELLM_*`).**
-   `config.py` reads `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL` first, then falls back
-   to `LITELLM_BASE_URL` etc. for backward compat. `secrets.env` uses `LLM_*`.
+3. **All LLM configuration lives in `secrets.env` via `LLM_*` env vars.**
    `LLM_CHAT_PATH` overrides the completions endpoint path — needed for Google Gemini
    (`/chat/completions`) vs standard providers (`/v1/chat/completions`, the default).
+   `ANTHROPIC_MODEL` and `OLLAMA_MODEL` override the fallback model defaults
+   (set in `datapulse.config.yaml` as `selector_model` / `local_model`).
 
 4. **Chunker has NO fixed depth limit.**
    Old `_MAX_RECURSE_DEPTH=15` was removed. SPAs nest up to 22+ levels deep
@@ -199,16 +199,16 @@ output/debug/                Raw + clean HTML snapshots (--debug only, gitignore
 
 ### ✅ Phase 3 — Intent Parser + Local Model (Complete)
 - [x] `utils/ollama_client.py` — HTTP wrapper for Ollama
-- [x] `intent_parser.py` — LiteLLM primary + Ollama fallback + heuristic
+- [x] `intent_parser.py` — LLM primary + Ollama fallback + heuristic
 - [x] `scope_guard.py` — depth-aware URL queue + `enqueue_discovered_links()`
 - [x] `main.py` — full NL query path + concurrent deep crawl loop
 
 ### ✅ Phase 3.5 — Generic LLM Client + Google Gemini (Complete)
 - [x] `utils/llm_client.py` — OpenAI-compatible `httpx` wrapper (renamed from `litellm_client.py`)
-- [x] `config.py` — `LLM_*` env var properties (primary) + `LITELLM_*` fallback; removed deprecated `litellm_*` aliases
+- [x] `config.py` — `LLM_*` env var properties; `ANTHROPIC_MODEL` + `OLLAMA_MODEL` for fallback model selection
 - [x] `extractor.py` — `llm_client` first in `_llm_call()` routing; `has_llm` flag
 - [x] `intent_parser.py` — `_parse_with_llm()` (renamed from `_parse_with_litellm()`)
-- [x] `secrets.env` — switched to Google Gemini free tier (`gemini-3.1-flash-lite`), added `LLM_CHAT_PATH`
+- [x] `secrets.env` — switched to Google Gemini (`gemini-3.1-flash-lite`), added `LLM_CHAT_PATH`
 - [x] `llm_client.py` — `LLM_CHAT_PATH` env var for provider-specific completions path
 - [x] `llm_client.py` — `is_available()` checks config vars only (no HTTP ping — works for cloud APIs)
 
@@ -408,7 +408,7 @@ curl -s http://10.8.124.144:4000/v1/chat/completions \
 | Package | Version | Purpose |
 |---|---|---|
 | anthropic | 0.99.0 | Claude Haiku API (optional fallback) |
-| httpx | 0.28.1 | Fast static scraping + LiteLLM/Ollama HTTP client |
+| httpx | 0.28.1 | Fast static scraping + LLM/Ollama HTTP client |
 | playwright | 1.59.0 | JS/dynamic page scraping + pagination |
 | trafilatura | 2.0.0 | Main content text extraction (text-only mode) |
 | beautifulsoup4 | 4.14.3 | HTML parsing + selector application |

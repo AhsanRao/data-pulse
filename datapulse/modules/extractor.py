@@ -91,7 +91,7 @@ Infer a flat JSON schema for each item. Respond ONLY with valid JSON like:
 # ── LLM backend selection ─────────────────────────────────────────────────────
 
 def _llm_call(prompt: str, model: str | None = None, max_tokens: int = 512) -> str:
-    """Route LLM calls: LiteLLM proxy first, then Anthropic, then Ollama."""
+    """Route LLM calls: configured provider first, then Anthropic, then Ollama."""
     log_path = cfg.log_dir / "llm_calls.log"
 
     from datapulse.utils import llm_client
@@ -103,13 +103,12 @@ def _llm_call(prompt: str, model: str | None = None, max_tokens: int = 512) -> s
 
     from datapulse.utils.ollama_client import is_available as ollama_ok
     if ollama_ok():
-        ollama_model = cfg.llm.get("local_model", "qwen2.5:1.5b")
-        return _call_ollama(prompt, ollama_model, log_path)
+        return _call_ollama(prompt, cfg.ollama_model, log_path)
 
     raise RuntimeError(
         "No LLM available. Either:\n"
         "  1. Set LLM_BASE_URL + LLM_API_KEY + LLM_MODEL in secrets.env\n"
-        "     Google Gemini (free tier): LLM_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai\n"
+        "     Google Gemini : LLM_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai\n"
         "                                LLM_CHAT_PATH=/chat/completions  LLM_MODEL=gemini-2.0-flash\n"
         "  2. Add ANTHROPIC_API_KEY to secrets.env\n"
         "  3. Start Ollama: brew services start ollama && ollama pull qwen2.5:1.5b"
@@ -119,7 +118,7 @@ def _llm_call(prompt: str, model: str | None = None, max_tokens: int = 512) -> s
 def _call_anthropic(prompt: str, model: str | None, max_tokens: int, log_path: Path) -> str:
     import anthropic
 
-    model = model or cfg.llm.get("selector_model", "claude-haiku-4-5-20251001")
+    model = model or cfg.anthropic_model
     client = anthropic.Anthropic(api_key=cfg.anthropic_api_key)
     logger.debug("Anthropic call: model=%s", model)
     msg = client.messages.create(

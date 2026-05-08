@@ -1,7 +1,7 @@
 """Module 1 — Intent Parser.
 
 Converts a raw natural language query into a structured Intent object using
-Ollama + qwen2.5:1.5b running locally.
+the configured LLM provider (or Ollama locally as fallback).
 
 Intent types:
   url_list        — user wants links/URLs from a page
@@ -145,7 +145,7 @@ def _parse_with_llm(query: str) -> Intent:
 # ── Ollama parsing ────────────────────────────────────────────────────────────
 
 def _parse_with_ollama(query: str) -> Intent:
-    model = cfg.llm.get("local_model", "qwen2.5:1.5b")
+    model = cfg.ollama_model
     log_path = cfg.log_dir / "llm_calls.log"
 
     prompt = _INTENT_PROMPT.format(query=query)

@@ -101,7 +101,7 @@ LLM_CHAT_PATH=<completions-path> # optional — default /v1/chat/completions
 | **Google Gemini** | `https://generativelanguage.googleapis.com/v1beta/openai` | `/chat/completions` | `gemini-2.0-flash` |
 | **OpenAI** | `https://api.openai.com` | `/v1/chat/completions` | `gpt-4o-mini` |
 | **Anthropic** | `https://api.anthropic.com/v1` | `/chat/completions` | `claude-haiku-4-5-20251001` |
-| **LiteLLM proxy** | `http://your-server:4000` | `/v1/chat/completions` | `your-model` |
+| **Self-hosted proxy** | `http://your-server:4000` | `/v1/chat/completions` | `your-model` |
 | **Ollama** (local) | auto-detected via Ollama client | — | `gemma3:4b` / `qwen2.5-coder:7b` |
 
 ### Auto-selection priority

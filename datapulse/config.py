@@ -106,20 +106,27 @@ class Config:
     def anthropic_api_key(self) -> str | None:
         return os.getenv("ANTHROPIC_API_KEY")
 
-    # Generic OpenAI-compatible provider (LiteLLM, OpenAI, Anthropic via proxy, etc.)
-    # LLM_* is the canonical form; LITELLM_* kept for backward compatibility.
-
     @property
     def llm_base_url(self) -> str | None:
-        return os.getenv("LLM_BASE_URL") or os.getenv("LITELLM_BASE_URL")
+        return os.getenv("LLM_BASE_URL")
 
     @property
     def llm_api_key(self) -> str | None:
-        return os.getenv("LLM_API_KEY") or os.getenv("LITELLM_API_KEY")
+        return os.getenv("LLM_API_KEY")
 
     @property
     def llm_model(self) -> str | None:
-        return os.getenv("LLM_MODEL") or os.getenv("LITELLM_MODEL")
+        return os.getenv("LLM_MODEL")
+
+    # ── Model selection (env overrides config.yaml defaults) ──────────────────
+
+    @property
+    def anthropic_model(self) -> str:
+        return os.getenv("ANTHROPIC_MODEL") or self.llm.get("selector_model", "claude-haiku-4-5-20251001")
+
+    @property
+    def ollama_model(self) -> str:
+        return os.getenv("OLLAMA_MODEL") or self.llm.get("local_model", "qwen2.5:1.5b")
 
     @property
     def scraperapi_key(self) -> str | None:

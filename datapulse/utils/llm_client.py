@@ -4,8 +4,8 @@ Works with any OpenAI-compatible provider:
   - Google Gemini  (LLM_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai, LLM_CHAT_PATH=/chat/completions)
   - OpenAI         (LLM_BASE_URL=https://api.openai.com, LLM_MODEL=gpt-4o-mini)
   - Anthropic†     (LLM_BASE_URL=https://api.anthropic.com/v1, LLM_MODEL=claude-haiku-4-5-20251001)
-  - LiteLLM proxy  (LLM_BASE_URL=http://your-proxy:4000)
-  - Any compatible proxy or self-hosted model
+  - Self-hosted    (LLM_BASE_URL=http://your-server:4000)
+  - Any compatible proxy or local model server
 
 Configure via secrets.env:
   LLM_BASE_URL=<endpoint>          # required
@@ -34,9 +34,8 @@ _TIMEOUT = 120  # seconds
 def _get_config() -> tuple[str, str, str, str]:
     """Return (base_url, api_key, model, chat_path) from env via config.
 
-    Priority: LLM_* env vars → LITELLM_* env vars (backward compat) → defaults.
     LLM_CHAT_PATH lets you override the completions endpoint path:
-      - Standard / LiteLLM proxy: /v1/chat/completions  (default)
+      - Standard / self-hosted:   /v1/chat/completions  (default)
       - Google Gemini:            /chat/completions
     """
     from datapulse.config import cfg

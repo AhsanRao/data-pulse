@@ -13,11 +13,11 @@ playwright:
   max_pages: 20            # max pagination clicks with --paginate
 
 llm:
-  # Model used when Ollama is the active backend (no LiteLLM/Anthropic configured)
+  # Default Ollama model — override with OLLAMA_MODEL= in secrets.env
   local_model: qwen2.5:1.5b
 
-  # Model used when Anthropic direct SDK is the active backend (ANTHROPIC_API_KEY set,
-  # LiteLLM not configured). Has no effect when using LiteLLM — model comes from LLM_MODEL env var.
+  # Default Anthropic model — override with ANTHROPIC_MODEL= in secrets.env
+  # Only used when ANTHROPIC_API_KEY is set and LLM_BASE_URL is not configured.
   selector_model: claude-haiku-4-5-20251001
 
   # Safety cap: max number of HTML chunks to try before giving up.
